@@ -1,0 +1,51 @@
+name: vuln-scan
+description: >
+  Automated vulnerability scanning workflow. Runs nuclei with
+  community templates, nikto, and checks for common misconfigurations.
+  Should be run after reconnaissance is complete.
+
+steps:
+  - name: Nuclei Scan (critical/high templates)
+    command: "echo {{target}} | nuclei -silent -severity critical,high"
+    tool: nuclei
+    data_type: other
+    parser: lines
+    timeout: 1200
+    save_raw: true
+    required: false
+
+  - name: Nuclei Scan (medium/low templates)
+    command: "echo {{target}} | nuclei -silent -severity medium,low"
+    tool: nuclei
+    data_type: other
+    parser: lines
+    timeout: 1200
+    save_raw: true
+    required: false
+
+  - name: Nikto Web Scanner
+    command: "nikto -h {{target}} -Format txt -nointeractive"
+    tool: nikto
+    data_type: other
+    parser: lines
+    timeout: 900
+    save_raw: true
+    required: false
+
+  - name: Security Headers Check
+    command: "curl -sI {{target}}"
+    tool: curl
+    data_type: header
+    parser: lines
+    timeout: 30
+    save_raw: true
+    required: false
+
+  - name: SSL/TLS Analysis
+    command: "sslscan --no-colour {{target}}"
+    tool: sslscan
+    data_type: cert
+    parser: lines
+    timeout: 120
+    save_raw: true
+    required: false

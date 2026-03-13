@@ -1,0 +1,37 @@
+name: recon-basic
+description: >
+  Basic reconnaissance workflow — subdomain enumeration, live host detection,
+  and port scanning. Good starting point for any target domain.
+
+steps:
+  - name: Subdomain Enumeration (subfinder)
+    command: "subfinder -d {{domain}} -silent"
+    tool: subfinder
+    data_type: subdomain
+    parser: lines
+    timeout: 300
+    required: false
+
+  - name: Subdomain Enumeration (amass passive)
+    command: "amass enum -passive -d {{domain}} -silent"
+    tool: amass
+    data_type: subdomain
+    parser: lines
+    timeout: 600
+    required: false
+
+  - name: DNS Resolution Check
+    command: "echo {{domain}} | dnsx -silent -a -resp"
+    tool: dnsx
+    data_type: dns
+    parser: lines
+    timeout: 120
+    required: false
+
+  - name: HTTP Probing
+    command: "subfinder -d {{domain}} -silent | httpx -silent -status-code -title -tech-detect"
+    tool: httpx
+    data_type: url
+    parser: lines
+    timeout: 300
+    required: false

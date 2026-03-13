@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bbradar"
+version = "0.1.0"
+description = "BBRadar — Local-first bug bounty hunting platform for Kali Linux"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+keywords = ["bug-bounty", "security", "penetration-testing", "vulnerability", "recon"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+]
+dependencies = [
+    "pyyaml>=6.0",
+    "markdown>=3.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/c0re-i5/bbradar"
+Issues = "https://github.com/c0re-i5/bbradar/issues"
+
+[project.optional-dependencies]
+pdf = [
+    "weasyprint>=60.0",
+]
+dev = [
+    "pytest>=7.0",
+    "black",
+    "ruff",
+]
+
+[project.scripts]
+bb = "bbradar.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["bbradar*"]

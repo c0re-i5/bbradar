@@ -1,0 +1,79 @@
+name: recon-deep
+description: >
+  Deep reconnaissance workflow — comprehensive subdomain enum, port scanning,
+  technology detection, directory fuzzing, and parameter discovery.
+  Runs longer but provides thorough coverage.
+
+steps:
+  - name: Subdomain Enumeration (subfinder)
+    command: "subfinder -d {{domain}} -silent -all"
+    tool: subfinder
+    data_type: subdomain
+    parser: lines
+    timeout: 600
+    required: false
+
+  - name: Subdomain Enumeration (amass)
+    command: "amass enum -passive -d {{domain}} -silent"
+    tool: amass
+    data_type: subdomain
+    parser: lines
+    timeout: 900
+    required: false
+
+  - name: HTTP Probing
+    command: "subfinder -d {{domain}} -silent | httpx -silent -status-code -title -tech-detect -follow-redirects"
+    tool: httpx
+    data_type: url
+    parser: lines
+    timeout: 600
+    required: false
+
+  - name: Port Scan (common ports)
+    command: "nmap -sV --top-ports 1000 -T4 {{target}} -oG -"
+    tool: nmap
+    data_type: port
+    parser: lines
+    timeout: 900
+    save_raw: true
+    required: false
+
+  - name: Technology Detection
+    command: "whatweb {{target}} --color=never -q"
+    tool: whatweb
+    data_type: tech
+    parser: lines
+    timeout: 120
+    required: false
+
+  - name: Certificate Transparency
+    command: "curl -s 'https://crt.sh/?q=%25.{{domain}}&output=json' | jq -r '.[].name_value' | sort -u"
+    tool: crt.sh
+    data_type: subdomain
+    parser: lines
+    timeout: 60
+    required: false
+
+  - name: Wayback URLs
+    command: "echo {{domain}} | waybackurls"
+    tool: waybackurls
+    data_type: url
+    parser: lines
+    timeout: 300
+    required: false
+
+  - name: JavaScript File Discovery
+    command: "echo {{domain}} | waybackurls | grep -iE '\\.js$' | sort -u"
+    tool: waybackurls
+    data_type: js_file
+    parser: lines
+    timeout: 120
+    required: false
+
+  - name: Parameter Discovery
+    command: "echo {{domain}} | waybackurls | grep '=' | uro | sort -u"
+    tool: waybackurls
+    data_type: parameter
+    parser: lines
+    timeout: 120
+    required: false

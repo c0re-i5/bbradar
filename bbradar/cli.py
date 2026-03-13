@@ -1,0 +1,1915 @@
+#!/usr/bin/env python3
+"""
+BBRadar CLI — Bug Bounty Hunting Platform.
+
+Usage:
+    bb <command> <subcommand> [options]
+
+Commands:
+    project     Manage bug bounty programs / engagements
+    target      Manage scope targets (domains, IPs, URLs)
+    recon       Manage reconnaissance data
+    vuln        Track vulnerabilities / findings
+    note        Assessment notes
+    report      Generate reports
+    workflow    Run assessment workflows
+    wizard      Interactive guided wizards for common tasks
+    templates   Browse / search the vulnerability knowledge base
+    ingest      Ingest tool output and auto-create findings
+    kb          Knowledge base — sync & search CWE, CAPEC, VRT, Nuclei
+    scope       Manage scope rules
+    audit       View / manage audit log
+    evidence    Evidence file management
+    config      View/edit configuration
+    db          Database management — backup, restore, migrate
+    init        Initialize BBRadar (first-time setup)
+    status      Show current workspace status
+"""
+
+import argparse
+import json
+import os
+import sys
+import textwrap
+from pathlib import Path
+
+from .core.database import init_db, get_db_path
+from .core.config import load_config, save_config, ensure_dirs, set_config_value, get_config_value, DEFAULTS
+from .core.audit import get_audit_log
+from .core.utils import format_table, severity_color, confirm
+from .modules import projects, targets, recon, vulns, notes, reports, workflows
+from .modules import vuln_templates, knowledgebase, ingest, scope
+from .modules.wizards import wizard_project, wizard_target, wizard_vuln, quick_vuln
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Argument Parser
+# ═══════════════════════════════════════════════════════════════════
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="bb",
+        description="BBRadar — Bug Bounty Hunting Platform",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="command", help="Available commands")
+
+    # --- init ---
+    sub.add_parser("init", help="Initialize BBRadar (first-time setup)")
+
+    # --- status ---
+    sub.add_parser("status", help="Show workspace status")
+
+    # --- project ---
+    p_proj = sub.add_parser("project", help="Manage projects")
+    sp = p_proj.add_subparsers(dest="subcmd")
+
+    p = sp.add_parser("create", help="Create a new project")
+    p.add_argument("name", help="Project name")
+    p.add_argument("--platform", "-p", help="Platform (hackerone, bugcrowd, intigriti, private)")
+    p.add_argument("--url", help="Program URL")
+    p.add_argument("--scope", help="Scope description")
+    p.add_argument("--rules", help="Rules of engagement")
+
+    p = sp.add_parser("list", help="List projects")
+    p.add_argument("--status", "-s", help="Filter by status")
+
+    p = sp.add_parser("show", help="Show project details")
+    p.add_argument("id", type=int, help="Project ID")
+
+    p = sp.add_parser("update", help="Update a project")
+    p.add_argument("id", type=int, help="Project ID")
+    p.add_argument("--name", help="New name")
+    p.add_argument("--platform", help="Platform")
+    p.add_argument("--url", help="Program URL")
+    p.add_argument("--status", "-s", help="Status (active/paused/completed/archived)")
+    p.add_argument("--scope", help="Scope text")
+    p.add_argument("--rules", help="Rules text")
+
+    p = sp.add_parser("delete", help="Delete a project")
+    p.add_argument("id", type=int, help="Project ID")
+
+    p = sp.add_parser("stats", help="Show project statistics")
+    p.add_argument("id", type=int, help="Project ID")
+
+    # --- target ---
+    p_tgt = sub.add_parser("target", help="Manage targets")
+    sp = p_tgt.add_subparsers(dest="subcmd")
+
+    p = sp.add_parser("add", help="Add a target")
+    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("value", help="Target value (domain, IP, URL)")
+    p.add_argument("--type", "-t", default="domain", help="Asset type (domain/ip/url/wildcard/api/cidr)")
+    p.add_argument("--tier", help="Priority tier (critical/high/medium/low)")
+    p.add_argument("--out-of-scope", action="store_true", help="Mark as out of scope")
+    p.add_argument("--notes", "-n", help="Notes")
+
+    p = sp.add_parser("list", help="List targets")
+    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("--type", "-t", help="Filter by asset type")
+    p.add_argument("--in-scope", action="store_true", help="In-scope only")
+    p.add_argument("--out-of-scope", action="store_true", help="Out-of-scope only")
+
+    p = sp.add_parser("import", help="Import targets from file")
+    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("file", help="File path (one target per line)")
+    p.add_argument("--type", "-t", default="domain", help="Asset type")
+
+    p = sp.add_parser("update", help="Update a target")
+    p.add_argument("id", type=int, help="Target ID")
+    p.add_argument("--tier", help="Priority tier")
+    p.add_argument("--notes", "-n", help="Notes")
+    p.add_argument("--out-of-scope", action="store_true", help="Mark out of scope")
+    p.add_argument("--in-scope", action="store_true", help="Mark in scope")
+
+    p = sp.add_parser("delete", help="Delete a target")
+    p.add_argument("id", type=int, help="Target ID")
+
+    # --- recon ---
+    p_recon = sub.add_parser("recon", help="Manage recon data")
+    sp = p_recon.add_subparsers(dest="subcmd")
+
+    p = sp.add_parser("add", help="Add recon data")
+    p.add_argument("target_id", type=int, help="Target ID")
+    p.add_argument("data_type", help="Data type (subdomain/port/url/tech/...)")
+    p.add_argument("value", help="Data value")
+    p.add_argument("--tool", help="Source tool")
+
+    p = sp.add_parser("list", help="List recon data")
+    p.add_argument("--target", "-t", type=int, help="Target ID")
+    p.add_argument("--project", "-p", type=int, help="Project ID")
+    p.add_argument("--type", help="Filter by data type")
+    p.add_argument("--tool", help="Filter by source tool")
+    p.add_argument("--limit", type=int, default=50, help="Max results")
+
+    p = sp.add_parser("import", help="Import recon from file")
+    p.add_argument("target_id", type=int, help="Target ID")
+    p.add_argument("file", help="File path")
+    p.add_argument("data_type", help="Data type")
+    p.add_argument("--tool", help="Source tool name")
+
+    p = sp.add_parser("summary", help="Show recon data summary")
+    p.add_argument("--target", "-t", type=int, help="Target ID")
+    p.add_argument("--project", "-p", type=int, help="Project ID")
+
+    p = sp.add_parser("export", help="Export recon data to file")
+    p.add_argument("--target", "-t", type=int, help="Target ID")
+    p.add_argument("--project", "-p", type=int, help="Project ID")
+    p.add_argument("--type", help="Data type to export")
+    p.add_argument("--output", "-o", help="Output file path")
+
+    p = sp.add_parser("run", help="Run a tool and ingest results")
+    p.add_argument("tool_name", help="Tool to run (subfinder/nmap/httpx)")
+    p.add_argument("target_id", type=int, help="Target ID")
+    p.add_argument("--args", "-a", default="", help="Extra tool arguments")
+
+    # --- vuln ---
+    p_vuln = sub.add_parser("vuln", help="Track vulnerabilities")
+    sp = p_vuln.add_subparsers(dest="subcmd")
+
+    p = sp.add_parser("create", help="Create a finding")
+    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("title", help="Vulnerability title")
+    p.add_argument("--severity", "-s", default="medium", help="Severity (critical/high/medium/low/informational)")
+    p.add_argument("--type", "-t", help="Vuln type (xss/sqli/ssrf/...)")
+    p.add_argument("--target", type=int, help="Target ID")
+    p.add_argument("--description", "-d", help="Description")
+    p.add_argument("--impact", help="Impact statement")
+    p.add_argument("--repro", help="Reproduction steps")
+    p.add_argument("--request", help="HTTP request")
+    p.add_argument("--response", help="HTTP response")
+    p.add_argument("--remediation", help="Remediation advice")
+    p.add_argument("--cvss", type=float, help="CVSS score")
+    p.add_argument("--cvss-vector", help="CVSS vector string")
+
+    p = sp.add_parser("list", help="List vulnerabilities")
+    p.add_argument("--project", "-p", type=int, help="Project ID")
+    p.add_argument("--severity", "-s", help="Filter by severity")
+    p.add_argument("--status", help="Filter by status")
+    p.add_argument("--type", "-t", help="Filter by type")
+
+    p = sp.add_parser("show", help="Show vulnerability details")
+    p.add_argument("id", type=int, help="Vuln ID")
+
+    p = sp.add_parser("update", help="Update a vulnerability")
+    p.add_argument("id", type=int, help="Vuln ID")
+    p.add_argument("--severity", "-s", help="Severity")
+    p.add_argument("--status", help="Status (new/confirmed/reported/accepted/duplicate/resolved)")
+    p.add_argument("--type", "-t", help="Vuln type")
+    p.add_argument("--title", help="Title")
+    p.add_argument("--description", "-d", help="Description")
+    p.add_argument("--impact", help="Impact")
+    p.add_argument("--repro", help="Reproduction steps")
+    p.add_argument("--request", help="HTTP request")
+    p.add_argument("--response", help="HTTP response")
+    p.add_argument("--remediation", help="Remediation")
+    p.add_argument("--bounty", type=float, help="Bounty amount")
+    p.add_argument("--report-url", help="Submitted report URL")
+
+    p = sp.add_parser("delete", help="Delete a vulnerability")
+    p.add_argument("id", type=int, help="Vuln ID")
+
+    p = sp.add_parser("evidence", help="Add evidence to a vuln")
+    p.add_argument("vuln_id", type=int, help="Vuln ID")
+    p.add_argument("file", help="Evidence file path")
+
+    p = sp.add_parser("stats", help="Vulnerability statistics")
+    p.add_argument("--project", "-p", type=int, help="Project ID")
+
+    p = sp.add_parser("quick", help="Quick-log a vuln from a template")
+    p.add_argument("template_key", help="Template key (e.g. xss-reflected)")
+    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("endpoint", help="Affected endpoint")
+    p.add_argument("--param", help="Vulnerable parameter")
+    p.add_argument("--target", help="Target name / domain")
+    p.add_argument("--target-id", type=int, help="Target ID")
+    p.add_argument("--repro", help="Reproduction steps")
+    p.add_argument("--request", help="HTTP request")
+
+    p = sp.add_parser("transitions", help="Show allowed status transitions")
+    p.add_argument("id", type=int, help="Vuln ID")
+
+    p = sp.add_parser("duplicates", help="Find potential duplicate vulns")
+    p.add_argument("id", type=int, help="Vuln ID")
+
+    p = sp.add_parser("merge", help="Merge two vulns")
+    p.add_argument("source_id", type=int, help="Source vuln ID (will be marked duplicate)")
+    p.add_argument("target_id", type=int, help="Target vuln ID (will receive merged data)")
+
+    # --- note ---
+    p_note = sub.add_parser("note", help="Assessment notes")
+    sp = p_note.add_subparsers(dest="subcmd")
+
+    p = sp.add_parser("add", help="Add a note")
+    p.add_argument("content", help="Note content (use - for stdin)")
+    p.add_argument("--title", help="Note title")
+    p.add_argument("--project", "-p", type=int, help="Project ID")
+    p.add_argument("--target", "-t", type=int, help="Target ID")
+    p.add_argument("--vuln", "-v", type=int, help="Vuln ID")
+    p.add_argument("--tags", help="Comma-separated tags")
+
+    p = sp.add_parser("list", help="List notes")
+    p.add_argument("--project", "-p", type=int, help="Project ID")
+    p.add_argument("--target", "-t", type=int, help="Target ID")
+    p.add_argument("--vuln", "-v", type=int, help="Vuln ID")
+    p.add_argument("--tag", help="Filter by tag")
+    p.add_argument("--search", "-s", help="Full-text search")
+
+    p = sp.add_parser("show", help="Show a note")
+    p.add_argument("id", type=int, help="Note ID")
+
+    p = sp.add_parser("edit", help="Edit a note")
+    p.add_argument("id", type=int, help="Note ID")
+    p.add_argument("--content", help="New content")
+    p.add_argument("--title", help="New title")
+    p.add_argument("--tags", help="New tags")
+
+    p = sp.add_parser("delete", help="Delete a note")
+    p.add_argument("id", type=int, help="Note ID")
+
+    p = sp.add_parser("export", help="Export notes to markdown")
+    p.add_argument("--project", "-p", type=int, help="Project ID")
+    p.add_argument("--output", "-o", help="Output file path")
+
+    # --- report ---
+    p_rpt = sub.add_parser("report", help="Generate reports")
+    sp = p_rpt.add_subparsers(dest="subcmd")
+
+    p = sp.add_parser("vuln", help="Generate single vuln report")
+    p.add_argument("vuln_id", type=int, help="Vuln ID")
+    p.add_argument("--format", "-f", choices=["markdown", "html", "pdf"], default="markdown")
+    p.add_argument("--output", "-o", help="Output file path")
+
+    p = sp.add_parser("full", help="Generate full project report")
+    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("--format", "-f", choices=["markdown", "html", "pdf"], default="markdown")
+    p.add_argument("--output", "-o", help="Output file path")
+
+    p = sp.add_parser("executive", help="Generate executive summary")
+    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("--format", "-f", choices=["markdown", "html", "pdf"], default="markdown")
+    p.add_argument("--output", "-o", help="Output file path")
+
+    p = sp.add_parser("list", help="List generated reports")
+    p.add_argument("--project", "-p", type=int, help="Project ID")
+
+    # --- wizard ---
+    p_wiz = sub.add_parser("wizard", help="Interactive guided wizards")
+    sp_wiz = p_wiz.add_subparsers(dest="subcmd")
+    sp_wiz.add_parser("project", help="Create a new project (guided)")
+    sp_wiz.add_parser("target", help="Add a target (guided)")
+    sp_wiz.add_parser("vuln", help="Log a vulnerability (guided, with template picker)")
+
+    # --- templates ---
+    p_tpl = sub.add_parser("templates", help="Vulnerability knowledge base")
+    sp_tpl = p_tpl.add_subparsers(dest="subcmd")
+
+    sp_tpl.add_parser("list", help="List all vulnerability templates")
+
+    p = sp_tpl.add_parser("show", help="Show a template in detail")
+    p.add_argument("key", help="Template key (e.g. xss-reflected)")
+
+    p = sp_tpl.add_parser("search", help="Search templates by keyword")
+    p.add_argument("query", help="Search query")
+
+    sp_tpl.add_parser("categories", help="List templates grouped by OWASP category")
+
+    # --- scope ---
+    p_scope = sub.add_parser("scope", help="Manage scope rules — define what's in and out of scope")
+    sp_scope = p_scope.add_subparsers(dest="subcmd")
+
+    p = sp_scope.add_parser("add", help="Add an in-scope rule")
+    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("pattern", help="Scope pattern (e.g. *.example.com, 10.0.0.0/24, !admin.example.com)")
+    p.add_argument("--type", "-t", choices=["include", "exclude"], default="include",
+                   help="Rule type (default: include)")
+    p.add_argument("--pattern-type", choices=["wildcard", "cidr", "regex", "exact"],
+                   help="Pattern type (auto-detected if omitted)")
+    p.add_argument("--category", choices=["domain", "ip", "url", "general"],
+                   help="Asset category this rule applies to")
+    p.add_argument("--priority", type=int, default=0, help="Priority (higher wins)")
+    p.add_argument("--notes", "-n", help="Notes")
+
+    p = sp_scope.add_parser("exclude", help="Add an exclusion rule (shortcut)")
+    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("pattern", help="Pattern to exclude")
+    p.add_argument("--priority", type=int, default=0, help="Priority")
+    p.add_argument("--notes", "-n", help="Notes")
+
+    p = sp_scope.add_parser("list", help="List all scope rules")
+    p.add_argument("project_id", type=int, help="Project ID")
+
+    p = sp_scope.add_parser("delete", help="Delete a scope rule")
+    p.add_argument("rule_id", type=int, help="Rule ID")
+
+    p = sp_scope.add_parser("clear", help="Remove all scope rules for a project")
+    p.add_argument("project_id", type=int, help="Project ID")
+
+    p = sp_scope.add_parser("check", help="Check if a value is in scope")
+    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("value", help="Value to check (domain, IP, URL)")
+
+    p = sp_scope.add_parser("check-file", help="Check all values in a file against scope")
+    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("file", help="File with one value per line")
+
+    p = sp_scope.add_parser("import", help="Import scope rules from file (text, H1 JSON, Bugcrowd JSON)")
+    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("file", help="Scope file to import")
+
+    p = sp_scope.add_parser("validate", help="Validate targets against scope rules")
+    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("--fix", action="store_true", help="Auto-fix target in_scope flags")
+
+    p = sp_scope.add_parser("overview", help="Show scope overview for a project")
+    p.add_argument("project_id", type=int, help="Project ID")
+
+    sp_scope.add_parser("wizard", help="Interactive scope definition wizard")
+
+    # --- ingest ---
+    p_ing = sub.add_parser("ingest", help="Ingest tool output and auto-create findings")
+    sp_ing = p_ing.add_subparsers(dest="subcmd")
+
+    p = sp_ing.add_parser("file", help="Ingest a single tool output file")
+    p.add_argument("filepath", help="Path to tool output file")
+    p.add_argument("project_id", type=int, help="Project ID to ingest into")
+    p.add_argument("--tool", "-t", help="Tool name (auto-detected if omitted)")
+    p.add_argument("--dry-run", action="store_true", help="Parse and show results without creating vulns")
+    p.add_argument("--no-enrich", action="store_true", help="Skip KB enrichment")
+    p.add_argument("--min-severity", default="informational",
+                   choices=["critical", "high", "medium", "low", "informational"],
+                   help="Minimum severity to import (default: informational)")
+    p.add_argument("--scope-check", action="store_true",
+                   help="Filter findings against project scope rules")
+
+    p = sp_ing.add_parser("dir", help="Ingest all tool outputs from a directory")
+    p.add_argument("dirpath", help="Directory containing tool output files")
+    p.add_argument("project_id", type=int, help="Project ID to ingest into")
+    p.add_argument("--dry-run", action="store_true", help="Parse and show results without creating vulns")
+    p.add_argument("--no-enrich", action="store_true", help="Skip KB enrichment")
+    p.add_argument("--min-severity", default="informational",
+                   choices=["critical", "high", "medium", "low", "informational"],
+                   help="Minimum severity to import")
+    p.add_argument("--scope-check", action="store_true",
+                   help="Filter findings against project scope rules")
+
+    p = sp_ing.add_parser("pipe", help="Ingest tool output from stdin")
+    p.add_argument("project_id", type=int, help="Project ID to ingest into")
+    p.add_argument("--tool", "-t", required=True, help="Tool name (required for stdin)")
+    p.add_argument("--dry-run", action="store_true", help="Parse and show results without creating vulns")
+    p.add_argument("--no-enrich", action="store_true", help="Skip KB enrichment")
+    p.add_argument("--min-severity", default="informational",
+                   choices=["critical", "high", "medium", "low", "informational"],
+                   help="Minimum severity to import")
+    p.add_argument("--scope-check", action="store_true",
+                   help="Filter findings against project scope rules")
+
+    sp_ing.add_parser("tools", help="List supported tools / parsers")
+
+    p = sp_ing.add_parser("summary", help="Show ingest summary for a project")
+    p.add_argument("project_id", type=int, help="Project ID")
+
+    # --- kb (knowledge base) ---
+    p_kb = sub.add_parser("kb", help="Knowledge base — CWE, CAPEC, VRT, Nuclei")
+    sp_kb = p_kb.add_subparsers(dest="subcmd")
+
+    p = sp_kb.add_parser("sync", help="Download / update KB sources")
+    p.add_argument("--source", "-s", choices=["cwe", "capec", "vrt", "nuclei", "all"],
+                   default="all", help="Source to sync (default: all)")
+    p.add_argument("--force", "-f", action="store_true",
+                   help="Force re-download even if recently synced")
+
+    sp_kb.add_parser("status", help="Show KB sync status and record counts")
+
+    p = sp_kb.add_parser("search", help="Search across all KB sources")
+    p.add_argument("query", help="Search query")
+
+    p = sp_kb.add_parser("cwe", help="Look up a CWE by ID")
+    p.add_argument("id", help="CWE ID (e.g. 79 or CWE-79)")
+
+    p = sp_kb.add_parser("capec", help="Look up a CAPEC by ID")
+    p.add_argument("id", help="CAPEC ID (e.g. 1 or CAPEC-1)")
+
+    p = sp_kb.add_parser("vrt", help="Browse Bugcrowd VRT")
+    p.add_argument("category", nargs="?", help="Category to filter (optional)")
+
+    p = sp_kb.add_parser("nuclei", help="Search Nuclei templates")
+    p.add_argument("query", nargs="?", help="Search query")
+    p.add_argument("--severity", "-s", help="Filter by severity")
+    p.add_argument("--cwe", help="Filter by CWE ID")
+    p.add_argument("--tag", help="Filter by tag")
+    p.add_argument("--limit", "-n", type=int, default=30, help="Max results")
+
+    p = sp_kb.add_parser("enrich", help="Enrich a vulnerability with KB data")
+    p.add_argument("vuln_id", type=int, help="Vulnerability ID to enrich")
+
+    # --- workflow ---
+    p_wf = sub.add_parser("workflow", help="Run assessment workflows")
+    sp = p_wf.add_subparsers(dest="subcmd")
+
+    sp.add_parser("list", help="List available workflows")
+
+    p = sp.add_parser("run", help="Run a workflow")
+    p.add_argument("name", help="Workflow name or path")
+    p.add_argument("target_id", type=int, help="Target ID")
+    p.add_argument("--project", "-p", type=int, help="Project ID")
+    p.add_argument("--dry-run", action="store_true", help="Show commands without executing")
+
+    p = sp.add_parser("show", help="Show workflow run details")
+    p.add_argument("run_id", type=int, help="Workflow run ID")
+
+    p = sp.add_parser("history", help="Workflow run history")
+    p.add_argument("--project", "-p", type=int, help="Project ID")
+    p.add_argument("--target", "-t", type=int, help="Target ID")
+
+    p = sp.add_parser("preflight", help="Check if required tools are installed")
+    p.add_argument("name", help="Workflow name or path")
+
+    # --- evidence ---
+    p_ev = sub.add_parser("evidence", help="Evidence file management")
+    sp_ev = p_ev.add_subparsers(dest="subcmd")
+
+    sp_ev.add_parser("stats", help="Show evidence storage statistics")
+    sp_ev.add_parser("orphans", help="List orphaned evidence files")
+
+    p = sp_ev.add_parser("cleanup", help="Remove orphaned evidence files")
+    p.add_argument("--execute", action="store_true",
+                   help="Actually delete files (default: dry run)")
+
+    # --- audit ---
+    p_audit = sub.add_parser("audit", help="View audit log")
+    sp_audit = p_audit.add_subparsers(dest="subcmd")
+
+    p = sp_audit.add_parser("log", help="View audit log entries")
+    p.add_argument("--entity-type", "-e", help="Filter by entity type")
+    p.add_argument("--entity-id", type=int, help="Filter by entity ID")
+    p.add_argument("--limit", "-n", type=int, default=30, help="Max results")
+
+    sp_audit.add_parser("stats", help="Show audit log statistics")
+
+    p = sp_audit.add_parser("purge", help="Purge old audit log entries")
+    p.add_argument("--days", "-d", type=int, default=90, help="Delete entries older than N days (default: 90)")
+
+    p = sp_audit.add_parser("export", help="Export audit log to JSON")
+    p.add_argument("--output", "-o", required=True, help="Output file path")
+    p.add_argument("--entity-type", "-e", help="Filter by entity type")
+    p.add_argument("--limit", "-n", type=int, default=10000, help="Max entries")
+
+    # --- config ---
+    p_cfg = sub.add_parser("config", help="View/edit configuration")
+    sp = p_cfg.add_subparsers(dest="subcmd")
+
+    sp.add_parser("show", help="Show current configuration")
+
+    p = sp.add_parser("set", help="Set a config value")
+    p.add_argument("key", help="Config key (dot-separated, e.g. 'report_author')")
+    p.add_argument("value", help="Config value")
+
+    p = sp.add_parser("get", help="Get a config value")
+    p.add_argument("key", help="Config key")
+
+    # --- db (database management) ---
+    p_db = sub.add_parser("db", help="Database management — backup, restore, migrate")
+    sp_db = p_db.add_subparsers(dest="subcmd")
+
+    p = sp_db.add_parser("backup", help="Create a database backup")
+    p.add_argument("--output", "-o", help="Output path (default: ~/.bbradar/backups/)")
+
+    p = sp_db.add_parser("restore", help="Restore database from backup")
+    p.add_argument("file", help="Path to backup .db file")
+
+    sp_db.add_parser("migrate", help="Apply pending schema migrations")
+    sp_db.add_parser("status", help="Show database version and stats")
+
+    return parser
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Command Handlers
+# ═══════════════════════════════════════════════════════════════════
+
+def cmd_init(args):
+    """Initialize BBRadar."""
+    from .core.database import migrate_db
+    print("🔧 Initializing BBRadar...")
+    cfg = load_config()
+    ensure_dirs(cfg)
+    save_config(cfg)
+    init_db()
+    applied = migrate_db()
+    print(f"  ✓ Database created at {get_db_path()}")
+    if applied:
+        for m in applied:
+            print(f"  ✓ Migration: {m}")
+    print(f"  ✓ Config saved to ~/.bbradar/config.yaml")
+    print(f"  ✓ Data directories created")
+    print("\n✅ BBRadar is ready. Run 'bb project create <name>' to start a new engagement.")
+
+
+def cmd_status(args):
+    """Show workspace status."""
+    cfg = load_config()
+    try:
+        projs = projects.list_projects()
+        active = [p for p in projs if p["status"] == "active"]
+        all_vulns = vulns.list_vulns(limit=10000)
+        vuln_stats = vulns.get_vuln_stats()
+
+        print("═══ BBRadar Status ═══\n")
+        print(f"  Projects:  {len(projs)} total, {len(active)} active")
+        print(f"  Findings:  {vuln_stats['total']} total")
+        for sev in ("critical", "high", "medium", "low"):
+            count = vuln_stats["by_severity"].get(sev, 0)
+            if count:
+                print(f"    {severity_color(sev)}: {count}")
+        if vuln_stats.get("total_bounty"):
+            print(f"  Bounties:  ${vuln_stats['total_bounty']:.2f}")
+        print(f"\n  Data dir:  {cfg['data_dir']}")
+
+        if active:
+            print("\n  Active Projects:")
+            for p in active[:5]:
+                stats = projects.get_project_stats(p["id"])
+                print(f"    [{p['id']}] {p['name']} — {stats['vulns_total']} vulns, {stats['targets']} targets")
+    except Exception as e:
+        print(f"  BBRadar not initialized. Run 'bb init' first.")
+
+
+def cmd_project(args):
+    if args.subcmd == "create":
+        pid = projects.create_project(
+            name=args.name, platform=args.platform,
+            program_url=args.url, scope_raw=args.scope, rules=args.rules,
+        )
+        print(f"✓ Created project [{pid}] {args.name}")
+
+    elif args.subcmd == "list":
+        data = projects.list_projects(status=args.status)
+        if not data:
+            print("No projects found.")
+            return
+        print(format_table(data, ["id", "name", "platform", "status", "created_at"]))
+
+    elif args.subcmd == "show":
+        p = projects.get_project(args.id)
+        if not p:
+            print(f"Project #{args.id} not found.")
+            return
+        print(f"\n═══ Project: {p['name']} ═══\n")
+        for k, v in p.items():
+            if v:
+                print(f"  {k:15s}: {v}")
+        stats = projects.get_project_stats(args.id)
+        print(f"\n  --- Statistics ---")
+        print(f"  Targets:          {stats['targets']}")
+        print(f"  Findings:         {stats['vulns_total']}")
+        print(f"  Recon data:       {stats['recon_data_points']}")
+        print(f"  Notes:            {stats['notes']}")
+        if stats["vulns_by_severity"]:
+            print(f"  By severity:")
+            for sev, cnt in stats["vulns_by_severity"].items():
+                print(f"    {severity_color(sev)}: {cnt}")
+
+    elif args.subcmd == "update":
+        ok = projects.update_project(
+            args.id, name=args.name, platform=args.platform,
+            program_url=args.url, scope_raw=args.scope,
+            rules=args.rules, status=args.status,
+        )
+        print(f"✓ Updated project #{args.id}" if ok else "No changes made.")
+
+    elif args.subcmd == "delete":
+        if confirm(f"Delete project #{args.id} and ALL related data?"):
+            projects.delete_project(args.id)
+            print(f"✓ Deleted project #{args.id}")
+
+    elif args.subcmd == "stats":
+        stats = projects.get_project_stats(args.id)
+        print(json.dumps(stats, indent=2))
+
+    else:
+        print("Usage: bb project {create|list|show|update|delete|stats}")
+
+
+def cmd_target(args):
+    if args.subcmd == "add":
+        tid = targets.add_target(
+            args.project_id, args.type, args.value,
+            in_scope=not args.out_of_scope, tier=args.tier, notes=args.notes,
+        )
+        print(f"✓ Added target [{tid}] {args.value}")
+
+    elif args.subcmd == "list":
+        in_scope = None
+        if args.in_scope:
+            in_scope = True
+        elif args.out_of_scope:
+            in_scope = False
+        data = targets.list_targets(args.project_id, asset_type=args.type, in_scope=in_scope)
+        if not data:
+            print("No targets found.")
+            return
+        print(format_table(data, ["id", "asset_type", "value", "in_scope", "tier"]))
+
+    elif args.subcmd == "import":
+        count = targets.import_targets_from_file(
+            args.project_id, args.file, asset_type=args.type,
+        )
+        print(f"✓ Imported {count} targets")
+
+    elif args.subcmd == "update":
+        kwargs = {}
+        if args.tier:
+            kwargs["tier"] = args.tier
+        if args.notes:
+            kwargs["notes"] = args.notes
+        if args.in_scope:
+            kwargs["in_scope"] = True
+        if args.out_of_scope:
+            kwargs["in_scope"] = False
+        ok = targets.update_target(args.id, **kwargs)
+        print(f"✓ Updated target #{args.id}" if ok else "No changes made.")
+
+    elif args.subcmd == "delete":
+        if confirm(f"Delete target #{args.id} and its recon data?"):
+            targets.delete_target(args.id)
+            print(f"✓ Deleted target #{args.id}")
+
+    else:
+        print("Usage: bb target {add|list|import|update|delete}")
+
+
+def cmd_recon(args):
+    if args.subcmd == "add":
+        rid = recon.add_recon(args.target_id, args.data_type, args.value, source_tool=args.tool)
+        if rid:
+            print(f"✓ Added recon [{rid}] {args.data_type}: {args.value}")
+        else:
+            print("Duplicate entry — already exists.")
+
+    elif args.subcmd == "list":
+        data = recon.list_recon(
+            target_id=args.target, project_id=args.project,
+            data_type=args.type, source_tool=args.tool, limit=args.limit,
+        )
+        if not data:
+            print("No recon data found.")
+            return
+        print(format_table(data, ["id", "target_id", "data_type", "value", "source_tool", "created_at"]))
+
+    elif args.subcmd == "import":
+        count = recon.ingest_from_file(args.target_id, args.file, args.data_type, source_tool=args.tool)
+        print(f"✓ Imported {count} recon entries")
+
+    elif args.subcmd == "summary":
+        summary = recon.get_recon_summary(target_id=args.target, project_id=args.project)
+        if not summary:
+            print("No recon data found.")
+            return
+        print("\nRecon Data Summary:")
+        total = 0
+        for dtype, count in summary.items():
+            print(f"  {dtype:20s}: {count}")
+            total += count
+        print(f"  {'TOTAL':20s}: {total}")
+
+    elif args.subcmd == "export":
+        path = recon.export_recon(
+            target_id=args.target, project_id=args.project,
+            data_type=args.type, output_path=args.output,
+        )
+        print(f"✓ Exported to {path}")
+
+    elif args.subcmd == "run":
+        tool = args.tool_name.lower()
+        t = targets.get_target(args.target_id)
+        if not t:
+            print(f"Target #{args.target_id} not found.")
+            return
+        print(f"Running {tool} against {t['value']}...")
+        try:
+            if tool == "subfinder":
+                count = recon.ingest_subfinder(args.target_id, t["value"], extra_args=args.args)
+            elif tool == "nmap":
+                count = recon.ingest_nmap(args.target_id, t["value"], extra_args=args.args or "-sV -sC")
+            elif tool == "httpx":
+                count = recon.ingest_httpx(args.target_id, targets=[t["value"]], extra_args=args.args)
+            else:
+                print(f"Tool '{tool}' not supported for auto-ingest. Use 'bb recon import' instead.")
+                return
+            print(f"✓ Ingested {count} results from {tool}")
+        except RuntimeError as e:
+            print(f"Error: {e}")
+
+    else:
+        print("Usage: bb recon {add|list|import|summary|export|run}")
+
+
+def cmd_vuln(args):
+    if args.subcmd == "create":
+        vid = vulns.create_vuln(
+            project_id=args.project_id, title=args.title,
+            severity=args.severity, vuln_type=args.type,
+            target_id=args.target, description=args.description,
+            impact=args.impact, reproduction=args.repro,
+            request=args.request, response=args.response,
+            remediation=args.remediation, cvss_score=args.cvss,
+            cvss_vector=args.cvss_vector,
+        )
+        print(f"✓ Created finding [{vid}] {args.title} ({args.severity.upper()})")
+
+    elif args.subcmd == "list":
+        data = vulns.list_vulns(
+            project_id=args.project, severity=args.severity,
+            status=args.status, vuln_type=args.type,
+        )
+        if not data:
+            print("No findings.")
+            return
+        for v in data:
+            v["severity"] = severity_color(v["severity"])
+        print(format_table(data, ["id", "title", "severity", "vuln_type", "status"]))
+
+    elif args.subcmd == "show":
+        v = vulns.get_vuln(args.id)
+        if not v:
+            print(f"Finding #{args.id} not found.")
+            return
+        print(f"\n═══ Finding: {v['title']} ═══\n")
+        for k, val in v.items():
+            if val and k not in ("request", "response"):
+                label = k.replace("_", " ").title()
+                print(f"  {label:20s}: {val}")
+        if v.get("request"):
+            print(f"\n  --- HTTP Request ---\n{v['request'][:500]}")
+        if v.get("response"):
+            print(f"\n  --- HTTP Response ---\n{v['response'][:500]}")
+
+    elif args.subcmd == "update":
+        kwargs = {}
+        for field in ("severity", "status", "title", "description", "impact",
+                       "remediation", "bounty", "report_url"):
+            val = getattr(args, field.replace("-", "_"), None)
+            if val is not None:
+                key = "bounty_amount" if field == "bounty" else field
+                kwargs[key] = val
+        if args.type:
+            kwargs["vuln_type"] = args.type
+        if args.repro:
+            kwargs["reproduction"] = args.repro
+        if args.request:
+            kwargs["request"] = args.request
+        if args.response:
+            kwargs["response"] = args.response
+        ok = vulns.update_vuln(args.id, **kwargs)
+        print(f"✓ Updated finding #{args.id}" if ok else "No changes made.")
+
+    elif args.subcmd == "delete":
+        if confirm(f"Delete finding #{args.id}?"):
+            vulns.delete_vuln(args.id)
+            print(f"✓ Deleted finding #{args.id}")
+
+    elif args.subcmd == "evidence":
+        ok = vulns.add_evidence(args.vuln_id, args.file)
+        print(f"✓ Added evidence" if ok else "Already added or vuln not found.")
+
+    elif args.subcmd == "stats":
+        s = vulns.get_vuln_stats(project_id=args.project)
+        print(f"\n═══ Vulnerability Statistics ═══\n")
+        print(f"  Total: {s['total']}")
+        if s.get("by_severity"):
+            print("  By Severity:")
+            for sev, cnt in s["by_severity"].items():
+                print(f"    {severity_color(sev)}: {cnt}")
+        if s.get("by_status"):
+            print("  By Status:")
+            for status, cnt in s["by_status"].items():
+                print(f"    {status}: {cnt}")
+        if s.get("total_bounty"):
+            print(f"  Total Bounty: ${s['total_bounty']:.2f}")
+
+    elif args.subcmd == "quick":
+        vid = quick_vuln(
+            template_key=args.template_key,
+            project_id=args.project_id,
+            endpoint=args.endpoint,
+            parameter=args.param or "",
+            target=args.target or "",
+            target_id=args.target_id,
+            reproduction=args.repro,
+            request=args.request,
+        )
+        tpl = vuln_templates.get_template(args.template_key)
+        print(f"✓ Created finding [{vid}] from template '{args.template_key}' ({severity_color(tpl['severity'])})")
+
+    elif args.subcmd == "transitions":
+        v = vulns.get_vuln(args.id)
+        if not v:
+            print(f"Finding #{args.id} not found.")
+            return
+        allowed = vulns.get_allowed_transitions(args.id)
+        print(f"  Current status: {v['status']}")
+        if allowed:
+            print(f"  Allowed transitions: {', '.join(allowed)}")
+        else:
+            print(f"  No transitions available (terminal state).")
+
+    elif args.subcmd == "duplicates":
+        v = vulns.get_vuln(args.id)
+        if not v:
+            print(f"Finding #{args.id} not found.")
+            return
+        dupes = vulns.find_duplicates(args.id)
+        if not dupes:
+            print(f"  No potential duplicates found for #{args.id}.")
+            return
+        print(f"\n  Potential duplicates of [{args.id}] {v['title']}:\n")
+        for d in dupes:
+            sev = severity_color(d["severity"])
+            print(f"    [{d['id']}] {d['title'][:60]} ({sev}, project #{d['project_id']}, {d['status']})")
+        print(f"\n  Use 'bb vuln merge <source_id> <target_id>' to merge.")
+
+    elif args.subcmd == "merge":
+        if confirm(f"Merge vuln #{args.source_id} into #{args.target_id}?"):
+            ok = vulns.merge_vulns(args.source_id, args.target_id)
+            if ok:
+                print(f"✓ Merged #{args.source_id} → #{args.target_id}")
+            else:
+                print("Merge failed — check that both vulns exist.")
+
+    else:
+        print("Usage: bb vuln {create|list|show|update|delete|evidence|stats|quick|transitions|duplicates|merge}")
+
+
+def cmd_note(args):
+    if args.subcmd == "add":
+        content = args.content
+        if content == "-":
+            content = sys.stdin.read()
+        nid = notes.create_note(
+            content=content, title=args.title,
+            project_id=args.project, target_id=args.target,
+            vuln_id=args.vuln, tags=args.tags,
+        )
+        print(f"✓ Added note [{nid}]")
+
+    elif args.subcmd == "list":
+        data = notes.list_notes(
+            project_id=args.project, target_id=args.target,
+            vuln_id=args.vuln, tag=args.tag, search=args.search,
+        )
+        if not data:
+            print("No notes found.")
+            return
+        for n in data:
+            n["content"] = n["content"][:60] + "..." if len(n["content"]) > 60 else n["content"]
+        print(format_table(data, ["id", "title", "content", "tags", "created_at"]))
+
+    elif args.subcmd == "show":
+        n = notes.get_note(args.id)
+        if not n:
+            print(f"Note #{args.id} not found.")
+            return
+        print(f"\n═══ {n.get('title') or 'Note'} ═══")
+        if n.get("tags"):
+            print(f"Tags: {n['tags']}")
+        print(f"Created: {n['created_at']}\n")
+        print(n["content"])
+
+    elif args.subcmd == "edit":
+        ok = notes.update_note(
+            args.id, content=args.content, title=args.title, tags=args.tags,
+        )
+        print(f"✓ Updated note #{args.id}" if ok else "No changes made.")
+
+    elif args.subcmd == "delete":
+        notes.delete_note(args.id)
+        print(f"✓ Deleted note #{args.id}")
+
+    elif args.subcmd == "export":
+        path = notes.export_notes(project_id=args.project, output_path=args.output)
+        if path:
+            print(f"✓ Exported to {path}")
+        else:
+            print("No notes to export.")
+
+    else:
+        print("Usage: bb note {add|list|show|edit|delete|export}")
+
+
+def cmd_report(args):
+    if args.subcmd == "vuln":
+        path = reports.generate_single_vuln_report(
+            args.vuln_id, format=args.format, output_path=args.output,
+        )
+        print(f"✓ Report generated: {path}")
+
+    elif args.subcmd == "full":
+        path = reports.generate_full_report(
+            args.project_id, format=args.format, output_path=args.output,
+        )
+        print(f"✓ Report generated: {path}")
+
+    elif args.subcmd == "executive":
+        path = reports.generate_executive_summary(
+            args.project_id, format=args.format, output_path=args.output,
+        )
+        print(f"✓ Report generated: {path}")
+
+    elif args.subcmd == "list":
+        data = reports.list_reports(project_id=args.project)
+        if not data:
+            print("No reports generated yet.")
+            return
+        print(format_table(data, ["id", "project_id", "report_type", "format", "file_path", "created_at"]))
+
+    else:
+        print("Usage: bb report {vuln|full|executive|list}")
+
+
+def cmd_kb(args):
+    """Knowledge base commands."""
+    if args.subcmd == "sync":
+        sources = None if args.source == "all" else [args.source]
+        print("\n═══ Knowledge Base Sync ═══\n")
+        if args.force:
+            print("  (--force: bypassing cache)\n")
+        results = knowledgebase.sync_all(
+            force=args.force, sources=sources, callback=print,
+        )
+        print("\n  --- Results ---")
+        for r in results:
+            status = r['status']
+            icon = {"updated": "✓", "not_modified": "·", "unchanged": "·",
+                    "skipped": "—", "error": "✗"}.get(status, "?")
+            line = f"  {icon} {r['source']:8s}  {status:14s}  {r['records']} records"
+            if r.get("reason"):
+                line += f"  ({r['reason']})"
+            print(line)
+        print()
+
+    elif args.subcmd == "status":
+        rows = knowledgebase.get_sync_status()
+        stats = knowledgebase.kb_stats()
+        print("\n═══ Knowledge Base Status ═══\n")
+        for r in rows:
+            src = r['source']
+            count = stats.get(src, 0)
+            desc = r['description']
+            last = r['last_sync']
+            if last and last != 'never':
+                last = last[:19].replace('T', ' ')
+            print(f"  {src:8s}  {count:>6} records  last sync: {last}")
+            print(f"           {desc}")
+            print(f"           refresh interval: every {r['min_sync_hours']}h\n")
+
+    elif args.subcmd == "search":
+        results = knowledgebase.search_kb(args.query)
+        total = sum(len(v) for v in results.values())
+        if total == 0:
+            print(f"No KB results for '{args.query}'.")
+            return
+        print(f"\n═══ KB Search: '{args.query}' ({total} results) ═══\n")
+        if results["cwe"]:
+            print("  CWE:")
+            for r in results["cwe"]:
+                desc = (r['description'] or '')[:70]
+                print(f"    {r['cwe_id']:12s} {r['name'][:55]:55s} {desc}")
+        if results["capec"]:
+            print("\n  CAPEC:")
+            for r in results["capec"]:
+                sev = r.get('severity') or ''
+                print(f"    {r['capec_id']:12s} {r['name'][:55]:55s} {sev}")
+        if results["vrt"]:
+            print("\n  VRT:")
+            for r in results["vrt"]:
+                pri = f"P{r['priority']}" if r.get('priority') else '  '
+                print(f"    {pri}  {r['path'][:50]:50s}  {r['name']}")
+        if results["nuclei"]:
+            print("\n  Nuclei:")
+            for r in results["nuclei"]:
+                sev = (r.get('severity') or '')[:8]
+                print(f"    {r['template_id'][:40]:40s} {sev:10s} {r['name'][:45]}")
+        print()
+
+    elif args.subcmd == "cwe":
+        cwe = knowledgebase.lookup_cwe(args.id)
+        if not cwe:
+            print(f"CWE '{args.id}' not found. Run 'bb kb sync --source cwe' first.")
+            return
+        print(f"\n═══ {cwe['cwe_id']}: {cwe['name']} ═══\n")
+        print(f"  Abstraction: {cwe.get('abstraction', 'N/A')}")
+        print(f"\n  Description:")
+        print(textwrap.indent(textwrap.fill(cwe['description'] or '', 72), '    '))
+        if cwe.get('extended_description'):
+            print(f"\n  Extended Description:")
+            print(textwrap.indent(textwrap.fill(cwe['extended_description'][:500], 72), '    '))
+        if cwe.get('consequences'):
+            print(f"\n  Consequences:")
+            for c in cwe['consequences'][:5]:
+                scopes = ', '.join(c.get('scope', []))
+                impacts = ', '.join(c.get('impact', []))
+                print(f"    [{scopes}] → {impacts}")
+        if cwe.get('mitigations'):
+            print(f"\n  Mitigations:")
+            for m in cwe['mitigations'][:5]:
+                phase = m.get('phase', '')
+                desc = m.get('description', '')[:120]
+                print(f"    [{phase}] {desc}")
+        if cwe.get('owasp_mappings'):
+            print(f"\n  OWASP Mappings:")
+            for o in cwe['owasp_mappings']:
+                print(f"    {o.get('taxonomy', '')} — {o.get('id', '')} {o.get('name', '')}")
+        if cwe.get('capec_ids'):
+            print(f"\n  Related CAPEC IDs: {', '.join(str(c) for c in cwe['capec_ids'][:15])}")
+        if cwe.get('related_cwes'):
+            rels = cwe['related_cwes'][:10]
+            print(f"\n  Related CWEs:")
+            for r in rels:
+                print(f"    CWE-{r['cwe_id']} ({r['nature']})")
+        print()
+
+    elif args.subcmd == "capec":
+        capec = knowledgebase.lookup_capec(args.id)
+        if not capec:
+            print(f"CAPEC '{args.id}' not found. Run 'bb kb sync --source capec' first.")
+            return
+        print(f"\n═══ {capec['capec_id']}: {capec['name']} ═══\n")
+        if capec.get('likelihood'):
+            print(f"  Likelihood: {capec['likelihood']}")
+        if capec.get('severity'):
+            print(f"  Severity:   {capec['severity']}")
+        print(f"\n  Description:")
+        print(textwrap.indent(textwrap.fill(capec['description'] or '', 72), '    '))
+        if capec.get('prerequisites'):
+            print(f"\n  Prerequisites:")
+            for p in capec['prerequisites'][:5]:
+                print(textwrap.indent(textwrap.fill(p[:200], 70), '    - '))
+        if capec.get('mitigations'):
+            print(f"\n  Mitigations:")
+            for m in capec['mitigations'][:5]:
+                print(textwrap.indent(textwrap.fill(m[:200], 70), '    - '))
+        if capec.get('related_cwes'):
+            print(f"\n  Related CWEs: {', '.join(capec['related_cwes'][:15])}")
+        print()
+
+    elif args.subcmd == "vrt":
+        if args.category:
+            rows = knowledgebase.browse_vrt(args.category)
+        else:
+            rows = knowledgebase.browse_vrt()
+        if not rows:
+            print("No VRT entries found. Run 'bb kb sync --source vrt' first.")
+            return
+        print(f"\n═══ Bugcrowd VRT ═══\n")
+        for r in rows:
+            pri = f"P{r['priority']}" if r.get('priority') else '  '
+            depth = r['path'].count('.')
+            indent = '  ' * depth
+            print(f"  {pri}  {indent}{r['name']}  ({r['path']})")
+        print(f"\n  Use 'bb kb vrt <category>' to drill into a category.")
+        print(f"  Priority: P1=Critical  P2=High  P3=Medium  P4=Low  P5=Info")
+
+    elif args.subcmd == "nuclei":
+        results = knowledgebase.search_nuclei(
+            query=args.query, severity=args.severity,
+            cwe=args.cwe, tag=args.tag, limit=args.limit,
+        )
+        if not results:
+            print("No nuclei templates found. Run 'bb kb sync --source nuclei' first.")
+            return
+        print(f"\n═══ Nuclei Templates ({len(results)} results) ═══\n")
+        for r in results:
+            sev = (r.get('severity') or 'unknown')[:8]
+            cwe = r.get('cwe_id', '') or ''
+            print(f"  {sev:10s} {r['template_id'][:40]:40s} {r['name'][:45]}")
+            if cwe:
+                print(f"             CWE: {cwe}")
+
+    elif args.subcmd == "enrich":
+        v = vulns.get_vuln(args.vuln_id)
+        if not v:
+            print(f"Finding #{args.vuln_id} not found.")
+            return
+        enrichment = knowledgebase.enrich_vuln(v)
+        if not enrichment:
+            print("No KB enrichment data found. Sync the KB first: bb kb sync")
+            return
+        print(f"\n═══ Enrichment for: {v['title']} ═══\n")
+        if enrichment.get("cwe"):
+            cwe = enrichment["cwe"]
+            print(f"  CWE: {cwe['cwe_id']} — {cwe['name']}")
+            if cwe.get('mitigations'):
+                print(f"  Mitigations from CWE:")
+                for m in cwe['mitigations'][:3]:
+                    print(f"    [{m.get('phase', '')}] {m.get('description', '')[:100]}")
+        if enrichment.get("related_capec"):
+            print(f"\n  Related Attack Patterns:")
+            for c in enrichment["related_capec"][:5]:
+                print(f"    {c['capec_id']}: {c['name']} (Severity: {c.get('severity', 'N/A')})")
+        if enrichment.get("related_nuclei"):
+            print(f"\n  Related Nuclei Templates:")
+            for n in enrichment["related_nuclei"][:5]:
+                print(f"    {n['template_id']} ({n.get('severity', 'N/A')})")
+        print()
+
+    else:
+        print("Usage: bb kb {sync|status|search|cwe|capec|vrt|nuclei|enrich}")
+        print("\n  Sync the knowledge base first:  bb kb sync")
+        print("  Then search or look up entries:  bb kb search xss")
+        print("                                   bb kb cwe 79")
+
+
+def cmd_ingest(args):
+    """Ingest tool output into a project."""
+    from .modules.parsers import list_parsers as _lp
+
+    if args.subcmd == "file":
+        result = ingest.ingest_file(
+            args.filepath, args.project_id,
+            tool_hint=args.tool, dry_run=args.dry_run,
+            enrich=not args.no_enrich, min_severity=args.min_severity,
+            scope_check=args.scope_check,
+        )
+        _print_ingest_result(result, args.dry_run)
+
+    elif args.subcmd == "dir":
+        results = ingest.ingest_directory(
+            args.dirpath, args.project_id,
+            dry_run=args.dry_run, enrich=not args.no_enrich,
+            min_severity=args.min_severity,
+            scope_check=args.scope_check,
+        )
+        if not results:
+            print("No recognizable tool output files found in directory.")
+            return
+        total_new = 0
+        total_dup = 0
+        total_created = 0
+        for r in results:
+            _print_ingest_result(r, args.dry_run, compact=True)
+            total_new += r.get("new", 0)
+            total_dup += r.get("duplicates", 0)
+            total_created += len(r.get("created_ids", []))
+        print(f"\n═══ Directory Summary ═══")
+        print(f"  Files processed:  {len(results)}")
+        print(f"  New findings:     {total_new}")
+        print(f"  Duplicates:       {total_dup}")
+        if not args.dry_run:
+            print(f"  Vulns created:    {total_created}")
+
+    elif args.subcmd == "pipe":
+        result = ingest.ingest_stdin(
+            args.project_id, tool_hint=args.tool,
+            dry_run=args.dry_run, enrich=not args.no_enrich,
+            min_severity=args.min_severity,
+            scope_check=args.scope_check,
+        )
+        _print_ingest_result(result, args.dry_run)
+
+    elif args.subcmd == "tools":
+        parsers = _lp()
+        print(f"\n═══ Supported Tools ({len(parsers)}) ═══\n")
+        for name in parsers:
+            print(f"  - {name}")
+        print(f"\n  Usage: bb ingest file <output_file> <project_id> [--tool <name>]")
+        print(f"         <tool> | bb ingest pipe <project_id> --tool <name>")
+        print(f"         bb ingest dir <directory> <project_id>")
+
+    elif args.subcmd == "summary":
+        summary = ingest.get_ingest_summary(args.project_id)
+        print(f"\n═══ Ingest Summary (Project #{args.project_id}) ═══\n")
+        print(f"  Total findings: {summary['total']}")
+        if summary["by_severity"]:
+            print("\n  By Severity:")
+            for sev in ("critical", "high", "medium", "low", "informational"):
+                cnt = summary["by_severity"].get(sev, 0)
+                if cnt:
+                    print(f"    {severity_color(sev)}: {cnt}")
+        if summary["by_type"]:
+            print("\n  By Type:")
+            for vt, cnt in sorted(summary["by_type"].items(), key=lambda x: -x[1]):
+                print(f"    {vt:25s}: {cnt}")
+        if summary["by_tool"]:
+            print("\n  By Source Tool:")
+            for tool, cnt in sorted(summary["by_tool"].items(), key=lambda x: -x[1]):
+                print(f"    {tool:15s}: {cnt}")
+
+    else:
+        print("Usage: bb ingest {file|dir|pipe|tools|summary}")
+        print("\n  Ingest tool output to auto-create vulnerability findings.")
+        print("  Supports: " + ", ".join(_lp()))
+        print("\n  Examples:")
+        print("    bb ingest file nuclei-results.json 1")
+        print("    bb ingest dir ./scan-results/ 1")
+        print("    nuclei -target example.com -json | bb ingest pipe 1 --tool nuclei")
+        print("    bb ingest tools")
+
+
+def _print_ingest_result(result: dict, dry_run: bool, compact: bool = False):
+    """Print a single ingest result."""
+    tool = result.get("tool", "unknown")
+    filename = result.get("file", "")
+    if isinstance(filename, str) and len(filename) > 60:
+        filename = "..." + filename[-57:]
+
+    if result.get("error"):
+        print(f"  ✗ [{tool}] {filename}: {result['error']}")
+        return
+
+    total = result.get("total_parsed", 0)
+    new = result.get("new", 0)
+    dups = result.get("duplicates", 0)
+    created = result.get("created_ids", [])
+
+    if compact:
+        action = f"created {len(created)} vulns" if not dry_run else f"{new} new"
+        print(f"  {'→' if dry_run else '✓'} [{tool}] {filename}: {total} parsed, {new} new, {dups} dups" +
+              (f", {action}" if not dry_run else ""))
+        return
+
+    label = "DRY RUN" if dry_run else "Ingest"
+    print(f"\n═══ {label}: {tool} ═══\n")
+    print(f"  File:       {filename}")
+    print(f"  Parsed:     {total} findings")
+    print(f"  New:        {new}")
+    print(f"  Duplicates: {dups}")
+    if result.get("skipped"):
+        print(f"  Skipped:    {result['skipped']} (below min severity)")
+    if result.get("out_of_scope"):
+        print(f"  Out-of-scope: {result['out_of_scope']} (filtered by scope rules)")
+
+    if not dry_run and created:
+        print(f"  Created:    {len(created)} draft vulns (IDs: {', '.join(str(i) for i in created[:20])})")
+    elif dry_run and result.get("findings"):
+        print(f"\n  --- Findings Preview ---")
+        for f in result["findings"][:15]:
+            sev = severity_color(f.get("severity", "info"))
+            print(f"    [{sev}] {f.get('title', 'Untitled')[:70]}")
+            if f.get("endpoint"):
+                print(f"           → {f['endpoint'][:70]}")
+        if len(result["findings"]) > 15:
+            print(f"    ... and {len(result['findings']) - 15} more")
+
+
+def cmd_scope(args):
+    """Manage scope rules."""
+    if args.subcmd == "add":
+        # Auto-detect exclude from ! prefix
+        pattern = args.pattern
+        rule_type = args.type
+        if pattern.startswith("!"):
+            pattern = pattern[1:].strip()
+            rule_type = "exclude"
+
+        rid = scope.add_rule(
+            args.project_id, pattern, rule_type=rule_type,
+            pattern_type=args.pattern_type, asset_category=args.category,
+            priority=args.priority, notes=args.notes,
+        )
+        icon = "✓" if rule_type == "include" else "✗"
+        print(f"{icon} Added {rule_type} rule [{rid}]: {pattern}")
+
+    elif args.subcmd == "exclude":
+        rid = scope.add_rule(
+            args.project_id, args.pattern, rule_type="exclude",
+            priority=args.priority, notes=args.notes,
+        )
+        print(f"✗ Added exclude rule [{rid}]: {args.pattern}")
+
+    elif args.subcmd == "list":
+        rules = scope.list_rules(args.project_id)
+        if not rules:
+            print("No scope rules defined. Use 'bb scope add' or 'bb scope import'.")
+            return
+        print(f"\n═══ Scope Rules (Project #{args.project_id}) ═══\n")
+        for r in rules:
+            icon = "✓" if r["rule_type"] == "include" else "✗"
+            ptype = r["pattern_type"][:4]
+            cat = r.get("asset_category") or "any"
+            pri = f"P{r['priority']}" if r["priority"] else ""
+            notes = f"  — {r['notes']}" if r.get("notes") else ""
+            print(f"  [{r['id']:3d}] {icon} {r['rule_type']:7s}  {ptype:5s}  {r['pattern']:40s}  {cat:8s}  {pri}{notes}")
+        print(f"\n  Total: {len(rules)} rules "
+              f"({sum(1 for r in rules if r['rule_type'] == 'include')} includes, "
+              f"{sum(1 for r in rules if r['rule_type'] == 'exclude')} excludes)")
+
+    elif args.subcmd == "delete":
+        rule = scope.get_rule(args.rule_id)
+        if not rule:
+            print(f"Rule #{args.rule_id} not found.")
+            return
+        scope.delete_rule(args.rule_id)
+        print(f"✓ Deleted rule #{args.rule_id}: {rule['rule_type']} {rule['pattern']}")
+
+    elif args.subcmd == "clear":
+        if confirm(f"Remove ALL scope rules for project #{args.project_id}?"):
+            count = scope.clear_rules(args.project_id)
+            print(f"✓ Removed {count} scope rules")
+
+    elif args.subcmd == "check":
+        result = scope.check_scope(args.project_id, args.value)
+        if result["in_scope"] is None:
+            print(f"  ? {args.value}  — {result['reason']}")
+        elif result["in_scope"]:
+            print(f"  ✓ IN SCOPE:  {args.value}")
+            print(f"    Reason: {result['reason']}")
+        else:
+            print(f"  ✗ OUT OF SCOPE:  {args.value}")
+            print(f"    Reason: {result['reason']}")
+        if result.get("all_matches"):
+            print(f"    Matching rules: {len(result['all_matches'])}")
+
+    elif args.subcmd == "check-file":
+        from pathlib import Path
+        p = Path(args.file)
+        if not p.exists():
+            print(f"File not found: {args.file}")
+            return
+        values = [l.strip() for l in p.read_text().splitlines()
+                  if l.strip() and not l.strip().startswith("#")]
+        results = scope.check_scope_batch(args.project_id, values)
+        in_count = 0
+        out_count = 0
+        unknown = 0
+        for r in results:
+            if r["in_scope"] is None:
+                icon = "?"
+                unknown += 1
+            elif r["in_scope"]:
+                icon = "✓"
+                in_count += 1
+            else:
+                icon = "✗"
+                out_count += 1
+            print(f"  {icon} {r['value']:50s}  {r['reason']}")
+        print(f"\n  Summary: {in_count} in-scope, {out_count} out-of-scope, {unknown} unknown")
+
+    elif args.subcmd == "import":
+        result = scope.import_from_file(args.project_id, args.file)
+        if result.get("error"):
+            print(f"  ✗ Import error: {result['error']}")
+        else:
+            src = result.get("source", "text")
+            print(f"✓ Imported {result.get('added', 0)} scope rules (format: {src})")
+
+    elif args.subcmd == "validate":
+        if args.fix:
+            result = scope.auto_scope_targets(args.project_id, dry_run=False)
+            print(f"\n═══ Scope Validation + Fix ═══\n")
+            print(f"  Total targets: {result['total_targets']}")
+            print(f"  Already correct: {result['correct']}")
+            if result["changes"]:
+                print(f"  Fixed: {len(result['changes'])}")
+                for c in result["changes"]:
+                    old = "in-scope" if c["old_scope"] else "out-of-scope"
+                    new = "in-scope" if c["new_scope"] else "out-of-scope"
+                    print(f"    [{c['target_id']}] {c['value']}: {old} → {new}  ({c['reason']})")
+            if result["unmatched"]:
+                print(f"  Unmatched (no rule): {result['unmatched']}")
+        else:
+            result = scope.validate_targets(args.project_id)
+            if result.get("message"):
+                print(f"  {result['message']}")
+                return
+            print(f"\n═══ Scope Validation ═══\n")
+            print(f"  Total targets: {result['total']}")
+            print(f"  Correct: {result['correct']}")
+            if result["mismatches"]:
+                print(f"  Mismatches: {len(result['mismatches'])}")
+                for m in result["mismatches"]:
+                    t = m["target"]
+                    cur = "in-scope" if m["current"] else "out-of-scope"
+                    exp = "in-scope" if m["expected"] else "out-of-scope"
+                    print(f"    [{t['id']}] {t['value']}: currently {cur}, should be {exp}")
+                    print(f"         Reason: {m['reason']}")
+                print(f"\n  Run 'bb scope validate {args.project_id} --fix' to auto-correct.")
+            else:
+                print(f"  All targets match scope rules. ✓")
+            if result["unmatched"]:
+                print(f"  Unmatched (no rule applies): {len(result['unmatched'])}")
+                for t in result["unmatched"][:10]:
+                    print(f"    [{t['id']}] {t['value']}")
+
+    elif args.subcmd == "overview":
+        ov = scope.scope_overview(args.project_id)
+        print(f"\n═══ Scope Overview (Project #{args.project_id}) ═══\n")
+        print(f"  Rules: {ov['rules_total']} ({len(ov['includes'])} includes, {len(ov['excludes'])} excludes)")
+        print(f"  Targets: {ov['targets_total']} ({ov['targets_in_scope']} in-scope, {ov['targets_out_scope']} out-of-scope)")
+
+        if ov["includes"]:
+            print(f"\n  In-Scope Patterns:")
+            for r in ov["includes"]:
+                notes = f"  — {r['notes']}" if r.get("notes") else ""
+                print(f"    ✓ {r['pattern']}{notes}")
+
+        if ov["excludes"]:
+            print(f"\n  Exclusions:")
+            for r in ov["excludes"]:
+                notes = f"  — {r['notes']}" if r.get("notes") else ""
+                print(f"    ✗ {r['pattern']}{notes}")
+
+        if ov["in_scope_targets"]:
+            print(f"\n  In-Scope Targets ({ov['targets_in_scope']}):")
+            for t in ov["in_scope_targets"][:20]:
+                print(f"    [{t['id']}] {t['asset_type']:8s} {t['value']}")
+            if ov["targets_in_scope"] > 20:
+                print(f"    ... and {ov['targets_in_scope'] - 20} more")
+
+        if ov["out_scope_targets"]:
+            print(f"\n  Out-of-Scope Targets ({ov['targets_out_scope']}):")
+            for t in ov["out_scope_targets"][:10]:
+                print(f"    [{t['id']}] {t['asset_type']:8s} {t['value']}")
+
+    elif args.subcmd == "wizard":
+        _scope_wizard()
+
+    else:
+        print("Usage: bb scope {add|exclude|list|delete|clear|check|check-file|import|validate|overview|wizard}")
+        print("\n  Define scope rules, then check targets against them.")
+        print("\n  Quick start:")
+        print("    bb scope add 1 '*.example.com'            # include wildcard")
+        print("    bb scope exclude 1 'admin.example.com'     # exclude specific host")
+        print("    bb scope add 1 '10.0.0.0/24'              # include CIDR range")
+        print("    bb scope check 1 sub.example.com           # check a value")
+        print("    bb scope import 1 scope.txt                # import from file")
+        print("    bb scope validate 1 --fix                  # sync targets to rules")
+
+
+def _scope_wizard():
+    """Interactive scope definition wizard."""
+    print("\n═══ Scope Definition Wizard ═══\n")
+
+    # Get project
+    from .modules import projects as proj_mod
+    projs = proj_mod.list_projects(status="active")
+    if not projs:
+        print("No active projects. Create one first: bb project create <name>")
+        return
+
+    print("  Active projects:")
+    for p in projs:
+        existing = scope.list_rules(p["id"])
+        rule_count = f" ({len(existing)} rules)" if existing else ""
+        print(f"    [{p['id']}] {p['name']}{rule_count}")
+
+    try:
+        pid = int(input("\n  Project ID: ").strip())
+    except (ValueError, EOFError):
+        print("Cancelled.")
+        return
+
+    # Check for existing rules
+    existing = scope.list_rules(pid)
+    if existing:
+        print(f"\n  Project already has {len(existing)} scope rules.")
+        action = input("  (a)dd more, (c)lear and start fresh, or (q)uit? [a]: ").strip().lower()
+        if action == "c":
+            scope.clear_rules(pid)
+            print("  Cleared existing rules.")
+        elif action == "q":
+            return
+
+    print("\n  Enter scope rules one per line.")
+    print("  Prefix with ! or - to mark as exclusion.")
+    print("  Use labels like 'IN: ...' or 'OUT: ...'")
+    print("  Supports: wildcards (*.example.com), CIDR (10.0.0.0/24), exact, regex")
+    print("  Enter a blank line when done.\n")
+
+    lines = []
+    while True:
+        try:
+            line = input("  > ").strip()
+        except EOFError:
+            break
+        if not line:
+            break
+        lines.append(line)
+
+    if not lines:
+        print("  No rules entered.")
+        return
+
+    text = "\n".join(lines)
+    result = scope.import_from_text(pid, text, source="wizard")
+    added = result.get("added", 0)
+    print(f"\n  ✓ Added {added} scope rules.")
+
+    # Offer to validate existing targets
+    from .modules import targets as tgt_mod
+    tgt_count = len(tgt_mod.list_targets(pid))
+    if tgt_count > 0:
+        do_validate = input(f"\n  Validate {tgt_count} existing targets against new rules? [Y/n]: ").strip().lower()
+        if do_validate != "n":
+            val_result = scope.auto_scope_targets(pid, dry_run=False)
+            if val_result["changes"]:
+                print(f"  ✓ Updated {len(val_result['changes'])} target(s):")
+                for c in val_result["changes"]:
+                    new_label = "in-scope" if c["new_scope"] else "out-of-scope"
+                    print(f"    {c['value']} → {new_label}")
+            else:
+                print(f"  ✓ All targets already match scope rules.")
+
+    # Show overview
+    print()
+    ov = scope.scope_overview(pid)
+    print(f"  Rules: {ov['rules_total']} ({len(ov['includes'])} includes, {len(ov['excludes'])} excludes)")
+    print(f"  Targets: {ov['targets_in_scope']} in-scope, {ov['targets_out_scope']} out-of-scope")
+
+
+def cmd_wizard(args):
+    """Interactive wizards."""
+    if args.subcmd == "project":
+        pid = wizard_project()
+        print(f"\n✓ Wizard complete — project [{pid}] created.")
+
+    elif args.subcmd == "target":
+        tid = wizard_target()
+        print(f"\n✓ Wizard complete — target [{tid}] added.")
+
+    elif args.subcmd == "vuln":
+        vid = wizard_vuln()
+        print(f"\n✓ Wizard complete — finding [{vid}] logged.")
+
+    else:
+        print("Usage: bb wizard {project|target|vuln}")
+        print("\n  Interactive guided flows that walk you through each step.")
+        print("  The vuln wizard includes a template picker so you don't")
+        print("  need to type descriptions, impact, or remediation by hand.")
+
+
+def cmd_templates(args):
+    """Browse / search the vulnerability knowledge base."""
+    if args.subcmd == "list":
+        keys = vuln_templates.list_template_keys()
+        print(f"\n═══ Vulnerability Templates ({len(keys)}) ═══\n")
+        for key in keys:
+            t = vuln_templates.get_template(key)
+            print(f"  {key:30s} {severity_color(t['severity']):12s}  {t['cwe']}  {t['owasp']}")
+        print(f"\n  Use 'bb templates show <key>' for full details.")
+        print(f"  Use 'bb vuln quick <key> <project_id> <endpoint>' to log a finding fast.")
+
+    elif args.subcmd == "show":
+        t = vuln_templates.get_template(args.key)
+        if not t:
+            print(f"Template '{args.key}' not found. Run 'bb templates list'.")
+            return
+        print(f"\n═══ Template: {t['key']} ═══\n")
+        print(f"  Title:        {t['title']}")
+        print(f"  Type:         {t['vuln_type']}")
+        print(f"  Severity:     {severity_color(t['severity'])}")
+        print(f"  CVSS:         {t['cvss_score']}  {t['cvss_vector']}")
+        print(f"  CWE:          {t['cwe']}")
+        print(f"  OWASP:        {t['owasp']}")
+        print(f"\n  Description:")
+        print(textwrap.indent(textwrap.fill(t['description'], 72), '    '))
+        print(f"\n  Impact:")
+        print(textwrap.indent(textwrap.fill(t['impact'], 72), '    '))
+        print(f"\n  Remediation:")
+        print(textwrap.indent(textwrap.fill(t['remediation'], 72), '    '))
+        if t.get('references'):
+            print(f"\n  References:")
+            for ref in t['references']:
+                print(f"    - {ref}")
+
+    elif args.subcmd == "search":
+        results = vuln_templates.search_templates(args.query)
+        if not results:
+            print(f"No templates matching '{args.query}'.")
+            return
+        print(f"\n  Found {len(results)} template(s) matching '{args.query}':\n")
+        for t in results:
+            print(f"  {t['key']:30s} {severity_color(t['severity']):12s}  {t['cwe']}")
+
+    elif args.subcmd == "categories":
+        groups = vuln_templates.get_templates_by_category()
+        for cat, tmpls in sorted(groups.items()):
+            print(f"\n  {cat}")
+            for t in tmpls:
+                print(f"    {t['key']:30s} {severity_color(t['severity'])}")
+
+    else:
+        print("Usage: bb templates {list|show|search|categories}")
+
+
+def cmd_workflow(args):
+    if args.subcmd == "list":
+        wfs = workflows.list_workflows()
+        if not wfs:
+            print("No workflows found.")
+            return
+        print(format_table(wfs, ["name", "description", "steps"]))
+
+    elif args.subcmd == "run":
+        print(f"Starting workflow '{args.name}'...")
+        result = workflows.run_workflow(
+            args.name, args.target_id,
+            project_id=args.project, dry_run=args.dry_run,
+        )
+        print(result["output"])
+        print(f"\n═══ Summary ═══")
+        print(f"  Steps run:     {result['steps_run']}")
+        print(f"  Steps OK:      {result['steps_ok']}")
+        print(f"  Steps failed:  {result['steps_failed']}")
+        print(f"  Data ingested: {result['data_ingested']}")
+        if result.get("run_id"):
+            print(f"  Run ID:        {result['run_id']}")
+
+    elif args.subcmd == "show":
+        run = workflows.get_workflow_run(args.run_id)
+        if not run:
+            print(f"Workflow run #{args.run_id} not found.")
+            return
+        print(f"\n═══ Workflow Run #{run['id']} ═══")
+        print(f"  Workflow:   {run['workflow_name']}")
+        print(f"  Status:     {run['status']}")
+        print(f"  Started:    {run['started_at']}")
+        print(f"  Finished:   {run.get('finished_at', 'still running')}")
+        if run.get("output_log"):
+            print(f"\n--- Output ---\n{run['output_log']}")
+
+    elif args.subcmd == "history":
+        runs = workflows.list_workflow_runs(
+            project_id=args.project, target_id=args.target,
+        )
+        if not runs:
+            print("No workflow runs found.")
+            return
+        print(format_table(runs, ["id", "workflow_name", "target_id", "status", "started_at"]))
+
+    elif args.subcmd == "preflight":
+        result = workflows.preflight_check(args.name)
+        if result["ok"]:
+            print(f"✓ All {result['steps']} tools available for workflow '{args.name}'.")
+        else:
+            print(f"✗ Missing tools for workflow '{args.name}':")
+            for tool in result["missing"]:
+                print(f"    ✗ {tool}")
+            print(f"\n  Install missing tools before running this workflow.")
+
+    else:
+        print("Usage: bb workflow {list|run|show|history|preflight}")
+
+
+def cmd_audit(args):
+    from .core.audit import get_audit_stats, purge_audit_log, export_audit_log
+
+    if args.subcmd == "log" or args.subcmd is None:
+        entity_type = getattr(args, "entity_type", None)
+        entity_id = getattr(args, "entity_id", None)
+        limit = getattr(args, "limit", 30)
+        entries = get_audit_log(
+            entity_type=entity_type, entity_id=entity_id,
+            limit=limit,
+        )
+        if not entries:
+            print("No audit log entries.")
+            return
+        print(format_table(entries, ["id", "timestamp", "action", "entity_type", "entity_id", "details"]))
+
+    elif args.subcmd == "stats":
+        s = get_audit_stats()
+        print(f"\n═══ Audit Log Statistics ═══\n")
+        print(f"  Total entries: {s['total']}")
+        print(f"  Oldest entry:  {s['oldest'] or 'N/A'}")
+        if s["by_action"]:
+            print(f"\n  By Action:")
+            for action, cnt in s["by_action"].items():
+                print(f"    {action:20s}: {cnt}")
+
+    elif args.subcmd == "purge":
+        days = args.days
+        if confirm(f"Purge audit log entries older than {days} days?"):
+            deleted = purge_audit_log(days=days)
+            print(f"✓ Purged {deleted} audit log entries.")
+
+    elif args.subcmd == "export":
+        path = export_audit_log(
+            output_path=args.output,
+            entity_type=getattr(args, "entity_type", None),
+            limit=args.limit,
+        )
+        print(f"✓ Exported audit log to {path}")
+
+    else:
+        print("Usage: bb audit {log|stats|purge|export}")
+
+
+def cmd_config(args):
+    if args.subcmd == "show":
+        cfg = load_config()
+        print(json.dumps(cfg, indent=2))
+
+    elif args.subcmd == "set":
+        cfg = set_config_value(args.key, args.value)
+        print(f"✓ Set {args.key} = {args.value}")
+
+    elif args.subcmd == "get":
+        val = get_config_value(args.key)
+        print(f"{args.key} = {val}")
+
+    else:
+        print("Usage: bb config {show|set|get}")
+
+
+def cmd_db(args):
+    """Database management — backup, restore, migrate."""
+    from .core.database import backup_db, restore_db, migrate_db, get_schema_version, get_db_path
+
+    if args.subcmd == "backup":
+        path = backup_db(output_path=args.output)
+        size_kb = os.path.getsize(path) / 1024
+        print(f"✓ Backup created: {path} ({size_kb:.1f} KB)")
+
+    elif args.subcmd == "restore":
+        if confirm(f"Restore database from {args.file}? Current DB will be saved as .pre-restore"):
+            dest = restore_db(args.file)
+            print(f"✓ Database restored to {dest}")
+            print("  Previous DB saved as bbradar.db.pre-restore")
+
+    elif args.subcmd == "migrate":
+        applied = migrate_db()
+        if applied:
+            print(f"✓ Applied {len(applied)} migration(s):")
+            for m in applied:
+                print(f"    {m}")
+        else:
+            print("✓ Database is up to date — no migrations needed.")
+
+    elif args.subcmd == "status":
+        db_path = get_db_path()
+        if not db_path.exists():
+            print("No database found. Run 'bb init' first.")
+            return
+        version = get_schema_version()
+        size_kb = os.path.getsize(db_path) / 1024
+        print(f"\n═══ Database Status ═══\n")
+        print(f"  Path:     {db_path}")
+        print(f"  Size:     {size_kb:.1f} KB")
+        print(f"  Version:  {version}")
+        # Count records
+        from .core.database import get_connection
+        with get_connection() as conn:
+            tables = ["projects", "targets", "recon_data", "vulns", "notes",
+                       "scope_rules", "audit_log", "workflow_runs", "reports"]
+            for t in tables:
+                try:
+                    cnt = conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+                    if cnt:
+                        print(f"  {t:15s}: {cnt} records")
+                except Exception:
+                    pass
+
+    else:
+        print("Usage: bb db {backup|restore|migrate|status}")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Evidence Handler
+# ═══════════════════════════════════════════════════════════════════
+
+def cmd_evidence(args):
+    """Evidence file management."""
+    from .modules.evidence import get_evidence_stats, find_orphaned_files, cleanup_orphans
+
+    if args.subcmd == "stats":
+        s = get_evidence_stats()
+        print(f"\n═══ Evidence Statistics ═══\n")
+        print(f"  Total files:      {s['total_files']}")
+        print(f"  Total size:       {s['total_size'] / 1024 / 1024:.1f} MB")
+        print(f"  Referenced:       {s['referenced']}")
+        print(f"  Orphaned:         {s['orphaned']}")
+        if s.get("orphan_size"):
+            print(f"  Orphan size:      {s['orphan_size'] / 1024 / 1024:.1f} MB")
+
+    elif args.subcmd == "orphans":
+        orphans = find_orphaned_files()
+        if not orphans:
+            print("No orphaned evidence files found.")
+            return
+        print(f"\n  Orphaned evidence files ({len(orphans)}):\n")
+        for o in orphans:
+            size_kb = o["size"] / 1024
+            print(f"    {o['relative']:50s}  {size_kb:.1f} KB")
+        total = sum(o["size"] for o in orphans) / 1024 / 1024
+        print(f"\n  Total: {len(orphans)} files, {total:.1f} MB")
+        print(f"  Run 'bb evidence cleanup --execute' to remove them.")
+
+    elif args.subcmd == "cleanup":
+        dry_run = not args.execute
+        result = cleanup_orphans(dry_run=dry_run)
+        if result["orphans_found"] == 0:
+            print("No orphaned files found.")
+            return
+        if dry_run:
+            print(f"\n  DRY RUN — would remove {result['orphans_found']} files "
+                  f"({result['total_size'] / 1024 / 1024:.1f} MB)")
+            for f in result["files"]:
+                print(f"    {f['relative']}")
+            print(f"\n  Add --execute to actually delete them.")
+        else:
+            print(f"✓ Removed {result['removed']} orphaned files "
+                  f"({result['total_size'] / 1024 / 1024:.1f} MB freed)")
+
+    else:
+        print("Usage: bb evidence {stats|orphans|cleanup}")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Main Entry Point
+# ═══════════════════════════════════════════════════════════════════
+
+COMMAND_MAP = {
+    "init": cmd_init,
+    "status": cmd_status,
+    "project": cmd_project,
+    "target": cmd_target,
+    "recon": cmd_recon,
+    "vuln": cmd_vuln,
+    "note": cmd_note,
+    "report": cmd_report,
+    "workflow": cmd_workflow,
+    "wizard": cmd_wizard,
+    "templates": cmd_templates,
+    "ingest": cmd_ingest,
+    "scope": cmd_scope,
+    "kb": cmd_kb,
+    "audit": cmd_audit,
+    "config": cmd_config,
+    "db": cmd_db,
+    "evidence": cmd_evidence,
+}
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        print("\n💡 Quick start: bb init → bb wizard project → bb wizard vuln")
+        print("💡 Or manual:  bb init → bb project create → bb target add → bb recon run")
+        sys.exit(0)
+
+    handler = COMMAND_MAP.get(args.command)
+    if handler:
+        try:
+            handler(args)
+        except Exception as e:
+            msg = str(e)
+            # Translate cryptic SQLite errors
+            if "FOREIGN KEY constraint failed" in msg:
+                msg = "Referenced project/target/vuln does not exist. Check the ID."
+            elif "UNIQUE constraint failed: projects.name" in msg:
+                msg = "A project with that name already exists."
+            elif "UNIQUE constraint failed" in msg:
+                msg = f"Duplicate entry: {msg}"
+            print(f"\n❌ Error: {msg}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
