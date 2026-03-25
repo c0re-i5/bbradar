@@ -552,6 +552,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = sp_h1.add_parser("programs", help="List your HackerOne programs")
     p.add_argument("--bounties", action="store_true", default=False,
                    help="Only show programs that pay bounties")
+    p.add_argument("--sort", choices=["name", "newest", "handle"], default="name",
+                   help="Sort order (default: name)")
+    p.add_argument("--search", "-s", default=None,
+                   help="Filter by keyword in name or handle")
+    p.add_argument("--state", default=None,
+                   help="Filter by program state")
+    p.add_argument("--refresh", action="store_true", default=False,
+                   help="Force refresh from HackerOne API")
 
     p = sp_h1.add_parser("search", help="Search for bug bounty programs")
     p.add_argument("query", nargs="?", default=None, help="Search text")
@@ -2113,12 +2121,22 @@ def cmd_h1(args):
             print(f"  Run 'bb h1 auth' to reconfigure.\n")
 
     elif args.subcmd == "programs":
-        bounties = args.bounties if args.bounties else None
-        progs = hackerone.list_programs(offers_bounties=bounties)
+        result = hackerone.get_cached_programs(
+            bounties_only=args.bounties,
+            sort=args.sort,
+            search=args.search,
+            state=args.state,
+            refresh=args.refresh,
+        )
+        progs = result["programs"]
         if not progs:
-            print("No programs found.")
+            print("No programs found matching your filters.")
             return
-        print(f"\n  Your HackerOne Programs ({len(progs)}):\n")
+        source = "cache" if result["from_cache"] else "API"
+        filter_note = ""
+        if result["filtered"] < result["total"]:
+            filter_note = f" (filtered from {result['total']})"
+        print(f"\n  HackerOne Programs ({result['filtered']}{filter_note}) [{source}]:\n")
         rows = []
         for p in progs:
             bounty = "💰" if p["offers_bounties"] else "  "

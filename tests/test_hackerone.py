@@ -435,6 +435,99 @@ class TestCredentials:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Tests: Program Cache
+# ═══════════════════════════════════════════════════════════════════
+
+class TestProgramCache:
+    @patch("bbradar.modules.hackerone._paginate")
+    def test_refresh_populates_cache(self, mock_paginate, tmp_db):
+        mock_paginate.return_value = _mock_programs_list_response()["data"]
+
+        count = hackerone.refresh_program_cache(db_path=tmp_db)
+        assert count == 2
+
+        result = hackerone.get_cached_programs(db_path=tmp_db)
+        assert result["total"] == 2
+        assert result["filtered"] == 2
+        assert result["from_cache"] is True
+
+    @patch("bbradar.modules.hackerone._paginate")
+    def test_bounties_filter(self, mock_paginate, tmp_db):
+        mock_paginate.return_value = _mock_programs_list_response()["data"]
+        hackerone.refresh_program_cache(db_path=tmp_db)
+
+        result = hackerone.get_cached_programs(bounties_only=True, db_path=tmp_db)
+        assert result["filtered"] == 1
+        assert result["programs"][0]["handle"] == "prog-a"
+
+    @patch("bbradar.modules.hackerone._paginate")
+    def test_search_filter(self, mock_paginate, tmp_db):
+        mock_paginate.return_value = _mock_programs_list_response()["data"]
+        hackerone.refresh_program_cache(db_path=tmp_db)
+
+        result = hackerone.get_cached_programs(search="Program B", db_path=tmp_db)
+        assert result["filtered"] == 1
+        assert result["programs"][0]["handle"] == "prog-b"
+
+    @patch("bbradar.modules.hackerone._paginate")
+    def test_search_by_handle(self, mock_paginate, tmp_db):
+        mock_paginate.return_value = _mock_programs_list_response()["data"]
+        hackerone.refresh_program_cache(db_path=tmp_db)
+
+        result = hackerone.get_cached_programs(search="prog-a", db_path=tmp_db)
+        assert result["filtered"] == 1
+
+    @patch("bbradar.modules.hackerone._paginate")
+    def test_sort_newest(self, mock_paginate, tmp_db):
+        mock_paginate.return_value = _mock_programs_list_response()["data"]
+        hackerone.refresh_program_cache(db_path=tmp_db)
+
+        result = hackerone.get_cached_programs(sort="newest", db_path=tmp_db)
+        # prog-b started 2024-06, prog-a started 2024-01
+        assert result["programs"][0]["handle"] == "prog-b"
+
+    @patch("bbradar.modules.hackerone._paginate")
+    def test_state_filter(self, mock_paginate, tmp_db):
+        mock_paginate.return_value = _mock_programs_list_response()["data"]
+        hackerone.refresh_program_cache(db_path=tmp_db)
+
+        result = hackerone.get_cached_programs(state="public_mode", db_path=tmp_db)
+        assert result["filtered"] == 2
+
+        result = hackerone.get_cached_programs(state="nonexistent", db_path=tmp_db)
+        assert result["filtered"] == 0
+
+    @patch("bbradar.modules.hackerone._paginate")
+    def test_auto_refresh_when_stale(self, mock_paginate, tmp_db):
+        """First call should auto-refresh from API since cache is empty."""
+        mock_paginate.return_value = _mock_programs_list_response()["data"]
+
+        result = hackerone.get_cached_programs(db_path=tmp_db)
+        assert result["from_cache"] is False
+        assert result["total"] == 2
+
+    @patch("bbradar.modules.hackerone._paginate")
+    def test_force_refresh(self, mock_paginate, tmp_db):
+        mock_paginate.return_value = _mock_programs_list_response()["data"]
+        hackerone.refresh_program_cache(db_path=tmp_db)
+
+        result = hackerone.get_cached_programs(refresh=True, db_path=tmp_db)
+        assert result["from_cache"] is False
+
+    @patch("bbradar.modules.hackerone._paginate")
+    def test_combined_filters(self, mock_paginate, tmp_db):
+        mock_paginate.return_value = _mock_programs_list_response()["data"]
+        hackerone.refresh_program_cache(db_path=tmp_db)
+
+        # Bounties + search — only prog-a pays bounties and matches
+        result = hackerone.get_cached_programs(
+            bounties_only=True, search="prog", db_path=tmp_db
+        )
+        assert result["filtered"] == 1
+        assert result["programs"][0]["handle"] == "prog-a"
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Tests: Scope Watch
 # ═══════════════════════════════════════════════════════════════════
 

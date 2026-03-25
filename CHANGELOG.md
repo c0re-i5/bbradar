@@ -24,6 +24,13 @@ All notable changes to BBRadar will be documented in this file.
   - `bb h1 monitor --auto-import --new-programs -q` — full automation mode
   - Credentials via env var `BBRADAR_DISCORD_WEBHOOK` (recommended) or config
 - Auto-links watched programs to BBRadar projects imported from the same H1 handle
+- **Local program cache with filters** — instant, offline-capable program browsing:
+  - `bb h1 programs --bounties` — show only bounty-paying programs
+  - `bb h1 programs --search <term>` — filter by name or handle
+  - `bb h1 programs --sort {name,newest,handle}` — sort results
+  - `bb h1 programs --state <state>` — filter by program state
+  - `bb h1 programs --refresh` — force re-fetch from API (auto-refreshes every 24h)
+  - DB migration #3: `h1_program_cache` table with indexed columns
 - DB migration #2: `h1_watched_programs`, `h1_scope_snapshots` tables, `h1_handle` project column
 
 ## [0.2.0] — 2026-03-25

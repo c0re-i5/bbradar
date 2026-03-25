@@ -206,6 +206,138 @@ def list_programs(offers_bounties: bool = None) -> list[dict]:
     return programs
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Program Cache & Filtering
+# ═══════════════════════════════════════════════════════════════════
+
+CACHE_MAX_AGE_HOURS = 24
+
+
+def refresh_program_cache(db_path=None) -> int:
+    """Fetch all programs from H1 and store in local cache. Returns count."""
+    from ..core.database import get_connection
+
+    programs = list_programs()
+
+    with get_connection(db_path) as conn:
+        conn.execute("DELETE FROM h1_program_cache")
+        for p in programs:
+            conn.execute(
+                """INSERT INTO h1_program_cache
+                   (h1_id, handle, name, offers_bounties, state,
+                    started_accepting_at, submission_state, bookmarked)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (p["id"], p["handle"], p["name"],
+                 1 if p["offers_bounties"] else 0,
+                 p["state"], p["started_accepting_at"],
+                 p["submission_state"],
+                 1 if p["bookmarked"] else 0),
+            )
+
+    log_action("program_cache_refreshed", "hackerone", None,
+               {"count": len(programs)}, db_path)
+    return len(programs)
+
+
+def _cache_is_fresh(db_path=None) -> bool:
+    """Check if the cache exists and is less than CACHE_MAX_AGE_HOURS old."""
+    from ..core.database import get_connection
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            """SELECT MIN(cached_at) as oldest FROM h1_program_cache"""
+        ).fetchone()
+        if not row or not row["oldest"]:
+            return False
+        # Check if oldest entry is within the cache age limit
+        count = conn.execute(
+            f"""SELECT COUNT(*) as cnt FROM h1_program_cache
+                WHERE cached_at > datetime('now', '-{int(CACHE_MAX_AGE_HOURS)} hours')"""
+        ).fetchone()
+        return count["cnt"] > 0
+
+
+def get_cached_programs(
+    bounties_only: bool = False,
+    sort: str = "name",
+    search: str = None,
+    state: str = None,
+    refresh: bool = False,
+    db_path=None,
+) -> dict:
+    """
+    Get programs from cache with filters. Auto-refreshes if cache is stale.
+
+    Args:
+        bounties_only: Only show programs that pay bounties
+        sort: Sort by 'name', 'newest', 'handle'
+        search: Filter by keyword in name or handle
+        state: Filter by program state
+        refresh: Force refresh from API
+
+    Returns: {programs: [...], from_cache: bool, total: int, filtered: int}
+    """
+    from ..core.database import get_connection
+
+    if refresh or not _cache_is_fresh(db_path):
+        refresh_program_cache(db_path)
+        from_cache = False
+    else:
+        from_cache = True
+
+    # Build query with filters
+    conditions = []
+    params = []
+
+    if bounties_only:
+        conditions.append("offers_bounties = 1")
+
+    if state:
+        conditions.append("state = ?")
+        params.append(state)
+
+    if search:
+        conditions.append("(handle LIKE ? OR name LIKE ?)")
+        term = f"%{search}%"
+        params.extend([term, term])
+
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    # Sort
+    order_map = {
+        "name": "name ASC",
+        "handle": "handle ASC",
+        "newest": "started_accepting_at DESC",
+    }
+    order = order_map.get(sort, "name ASC")
+
+    with get_connection(db_path) as conn:
+        total = conn.execute("SELECT COUNT(*) as cnt FROM h1_program_cache").fetchone()["cnt"]
+        rows = conn.execute(
+            f"SELECT * FROM h1_program_cache{where} ORDER BY {order}", params
+        ).fetchall()
+
+    programs = []
+    for r in rows:
+        programs.append({
+            "id": r["h1_id"],
+            "handle": r["handle"],
+            "name": r["name"],
+            "url": f"https://hackerone.com/{r['handle']}",
+            "offers_bounties": bool(r["offers_bounties"]),
+            "state": r["state"],
+            "started_accepting_at": r["started_accepting_at"] or "",
+            "submission_state": r["submission_state"],
+            "bookmarked": bool(r["bookmarked"]),
+        })
+
+    return {
+        "programs": programs,
+        "from_cache": from_cache,
+        "total": total,
+        "filtered": len(programs),
+    }
+
+
 def get_program(handle: str) -> dict:
     """Get detailed program information including scope."""
     result = _api_request(f"programs/{quote(handle, safe='')}")

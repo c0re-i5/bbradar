@@ -365,6 +365,23 @@ CREATE TABLE IF NOT EXISTS h1_scope_snapshots (
     UNIQUE(handle, asset_identifier, asset_type)
 );
 CREATE INDEX IF NOT EXISTS idx_h1_snapshots_handle ON h1_scope_snapshots(handle);
+
+-- ═══ HackerOne Program Cache ═══
+
+CREATE TABLE IF NOT EXISTS h1_program_cache (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    h1_id                 TEXT,
+    handle                TEXT    NOT NULL UNIQUE,
+    name                  TEXT    NOT NULL DEFAULT '',
+    offers_bounties       INTEGER NOT NULL DEFAULT 0,
+    state                 TEXT    NOT NULL DEFAULT '',
+    started_accepting_at  TEXT,
+    submission_state      TEXT    NOT NULL DEFAULT '',
+    bookmarked            INTEGER NOT NULL DEFAULT 0,
+    cached_at             TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_h1_cache_bounties ON h1_program_cache(offers_bounties);
+CREATE INDEX IF NOT EXISTS idx_h1_cache_state ON h1_program_cache(state);
 """;
 
 
@@ -416,6 +433,22 @@ MIGRATIONS = [
             UNIQUE(handle, asset_identifier, asset_type)
         );
         CREATE INDEX IF NOT EXISTS idx_h1_snapshots_handle ON h1_scope_snapshots(handle);
+    """),
+    (3, "Add H1 program cache table", """
+        CREATE TABLE IF NOT EXISTS h1_program_cache (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            h1_id                 TEXT,
+            handle                TEXT    NOT NULL UNIQUE,
+            name                  TEXT    NOT NULL DEFAULT '',
+            offers_bounties       INTEGER NOT NULL DEFAULT 0,
+            state                 TEXT    NOT NULL DEFAULT '',
+            started_accepting_at  TEXT,
+            submission_state      TEXT    NOT NULL DEFAULT '',
+            bookmarked            INTEGER NOT NULL DEFAULT 0,
+            cached_at             TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_h1_cache_bounties ON h1_program_cache(offers_bounties);
+        CREATE INDEX IF NOT EXISTS idx_h1_cache_state ON h1_program_cache(state);
     """),
 ]
 

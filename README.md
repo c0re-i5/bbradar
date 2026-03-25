@@ -222,8 +222,13 @@ tracking, and earnings monitoring:
 ```bash
 bb h1 auth                          # Configure API credentials
 bb h1 status                        # Check connection
-bb h1 programs                      # List your programs
-bb h1 search "ecommerce"            # Discover programs
+bb h1 programs                      # List all programs (cached locally)
+bb h1 programs --bounties           # Only bounty-paying programs
+bb h1 programs --search "fintech"   # Filter by keyword
+bb h1 programs --sort newest        # Sort by launch date
+bb h1 programs --state public_mode  # Filter by state
+bb h1 programs --refresh            # Force re-fetch from H1 API
+bb h1 search "ecommerce"            # Discover programs (API search)
 bb h1 import <handle>               # Import program → project + targets + scope
 bb h1 scope-sync <project_id> <handle>  # Sync scope updates
 bb h1 reports                       # List your submitted reports
