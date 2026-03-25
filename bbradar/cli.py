@@ -43,7 +43,7 @@ from .core.config import (
 from .core.audit import get_audit_log
 from .core.utils import format_table, severity_color, confirm, set_no_color
 from .modules import projects, targets, recon, vulns, notes, reports, workflows
-from .modules import vuln_templates, knowledgebase, ingest, scope, hackerone
+from .modules import vuln_templates, knowledgebase, ingest, scope, hackerone, notifier
 from .modules.wizards import wizard_project, wizard_target, wizard_vuln, quick_vuln
 
 
@@ -589,6 +589,20 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Auto-import new scope into linked projects")
     p.add_argument("--new-programs", action="store_true", default=False,
                    help="Scan for newly launched H1 programs")
+
+    p_notify = sp_h1.add_parser("notify", help="Configure notification channels")
+    p_notify.add_argument("channel", nargs="?", choices=["discord", "desktop", "status", "test"],
+                          default="status", help="Channel to configure")
+    p_notify.add_argument("value", nargs="?", default=None,
+                          help="Webhook URL or enable/disable")
+
+    p_mon = sp_h1.add_parser("monitor", help="Check all watched programs and send notifications")
+    p_mon.add_argument("--auto-import", action="store_true", default=False,
+                       help="Auto-import new scope into linked projects")
+    p_mon.add_argument("--new-programs", action="store_true", default=False,
+                       help="Also check for newly launched programs")
+    p_mon.add_argument("--quiet", "-q", action="store_true", default=False,
+                       help="Only output if there are changes (for cron)")
 
     # --- dashboard ---
     sub.add_parser("dashboard", help="Show combined BBRadar + HackerOne dashboard")
@@ -2270,8 +2284,122 @@ def cmd_h1(args):
 
         print(f"\n  Summary: {len(results)} programs checked, {total_changes} total changes.\n")
 
+    elif args.subcmd == "notify":
+        if args.channel == "discord":
+            if args.value:
+                notifier.configure_discord(args.value)
+                ok = notifier.test_discord()
+                if ok:
+                    print("\n  ✓ Discord webhook saved and verified! Test message sent.\n")
+                else:
+                    print("\n  ⚠ Webhook saved but test message failed. Check the URL.\n")
+            else:
+                status = notifier.get_status()
+                if status['discord']['configured']:
+                    print(f"\n  Discord: ✓ configured (via {status['discord']['source']})\n")
+                else:
+                    print("\n  Discord: not configured.")
+                    print("  Set via env var: export BBRADAR_DISCORD_WEBHOOK=<url>")
+                    print("  Or via command:  bb h1 notify discord <webhook_url>\n")
+
+        elif args.channel == "desktop":
+            if args.value in ("on", "enable", "true", "1", None):
+                notifier.configure_desktop(True)
+                ok = notifier.test_desktop()
+                if ok:
+                    print("\n  ✓ Desktop notifications enabled and tested.\n")
+                else:
+                    print("\n  ⚠ Enabled but notify-send not found. Install libnotify.\n")
+            elif args.value in ("off", "disable", "false", "0"):
+                notifier.configure_desktop(False)
+                print("\n  ✓ Desktop notifications disabled.\n")
+            else:
+                print("\n  Usage: bb h1 notify desktop [on|off]\n")
+
+        elif args.channel == "test":
+            print("\n  Testing notification channels...")
+            status = notifier.get_status()
+            if status['discord']['configured']:
+                ok = notifier.test_discord()
+                print(f"    Discord: {'✓ sent' if ok else '✗ failed'}")
+            else:
+                print("    Discord: not configured")
+            if status['desktop']['enabled']:
+                ok = notifier.test_desktop()
+                print(f"    Desktop: {'✓ sent' if ok else '✗ failed (is notify-send installed?)'}")
+            else:
+                print("    Desktop: disabled")
+            print()
+
+        else:  # status
+            status = notifier.get_status()
+            print("\n  Notification Channels:\n")
+            d = status['discord']
+            print(f"    Discord:  {'✓ configured' if d['configured'] else '✗ not configured'}" +
+                  (f" (via {d['source']})" if d['configured'] else ""))
+            print(f"    Desktop:  {'✓ enabled' if status['desktop']['enabled'] else '✗ disabled'}")
+            print(f"\n  Configure: bb h1 notify discord <url>")
+            print(f"             bb h1 notify desktop on")
+            print(f"  Test:      bb h1 notify test\n")
+
+    elif args.subcmd == "monitor":
+        quiet = args.quiet
+
+        # Check watched programs
+        results = hackerone.check_all_watched(auto_import=args.auto_import)
+        changed = [r for r in results if r.get('has_changes')]
+
+        # Check new programs if requested
+        new_progs = []
+        if args.new_programs:
+            new_progs = hackerone.check_new_programs()
+
+        # Print results (unless --quiet and nothing changed)
+        if not quiet or changed or new_progs:
+            if changed:
+                for r in changed:
+                    print(f"  🔔 [{r['handle']}] {r['name']}")
+                    if r['new']:
+                        for s in r['new']:
+                            bounty = " 💰" if s.get('eligible_for_bounty') else ""
+                            print(f"    + {s['asset_identifier']} ({s['asset_type']}){bounty}")
+                    if r['removed']:
+                        for s in r['removed']:
+                            print(f"    - {s['asset_identifier']} ({s['asset_type']})")
+                    if r['changed']:
+                        for s in r['changed']:
+                            changes = ', '.join(f"{k}: {v['old']}→{v['new']}" for k, v in s['changes'].items())
+                            print(f"    ~ {s['asset_identifier']}: {changes}")
+                    if r.get('auto_imported'):
+                        print(f"    ↳ Auto-imported {r['auto_imported']} targets")
+            elif not quiet:
+                print(f"  ✓ {len(results)} programs checked — no scope changes.")
+
+            if new_progs:
+                print(f"\n  🆕 {len(new_progs)} new programs:")
+                for p in new_progs[:10]:
+                    bounty = " 💰" if p.get('offers_bounties') else ""
+                    print(f"    {p['handle']}: {p['name'][:40]}{bounty}")
+
+        # Send notifications
+        notif_result = notifier.notify_scope_changes(results)
+        if new_progs:
+            notifier.notify_new_programs(new_progs)
+
+        if not quiet:
+            sent_to = []
+            if notif_result.get('discord'):
+                sent_to.append('Discord')
+            if notif_result.get('desktop'):
+                sent_to.append('Desktop')
+            if sent_to:
+                print(f"\n  📨 Notifications sent: {', '.join(sent_to)}")
+            elif changed:
+                print(f"\n  ⚠ Changes detected but no notification channels configured.")
+                print(f"    Run: bb h1 notify discord <webhook_url>")
+
     else:
-        print("Usage: bb h1 {auth|status|programs|search|import|scope-sync|reports|report|balance|earnings|watch|unwatch|watchlist|check}")
+        print("Usage: bb h1 {auth|status|programs|search|import|scope-sync|reports|report|balance|earnings|watch|unwatch|watchlist|check|notify|monitor}")
 
 
 def cmd_dashboard(args):

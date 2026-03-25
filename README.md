@@ -236,7 +236,39 @@ bb h1 check                         # Check all watched programs for changes
 bb h1 check <handle>                # Check a specific program
 bb h1 check --new-programs          # Find newly launched H1 programs
 bb h1 check --auto-import           # Auto-import new scope into linked projects
+bb h1 notify discord <webhook_url>  # Configure Discord alerts
+bb h1 notify desktop on             # Enable desktop notifications
+bb h1 notify test                   # Test all configured channels
+bb h1 notify status                 # Show notification channel status
+bb h1 monitor                       # Check all + send notifications (cron-friendly)
+bb h1 monitor --auto-import         # Monitor + auto-import new scope
+bb h1 monitor --new-programs        # Also alert on new H1 programs
+bb h1 monitor -q                    # Quiet mode — only output on changes
 bb dashboard                        # Combined local + H1 dashboard
+```
+
+#### Notifications & Monitoring
+
+Set up Discord alerts so you never miss a scope change:
+
+```bash
+# 1. Configure Discord (env var recommended, stays off git)
+export BBRADAR_DISCORD_WEBHOOK="https://discord.com/api/webhooks/..."
+
+# 2. Or save to config
+bb h1 notify discord <webhook_url>
+
+# 3. Enable desktop popups too (requires libnotify / notify-send)
+bb h1 notify desktop on
+
+# 4. Test it
+bb h1 notify test
+
+# 5. Run manually or from cron
+bb h1 monitor --auto-import --new-programs
+
+# Cron: check every 30 minutes
+# */30 * * * * cd ~/bbradar && .venv/bin/bb h1 monitor --auto-import -q
 ```
 
 Credentials can be set via environment variables (recommended) or config file:
