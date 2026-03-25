@@ -21,6 +21,9 @@ def get_db_path(data_dir: Path | None = None) -> Path:
     return base / "bbradar.db"
 
 
+_migrated_paths: set[str] = set()
+
+
 @contextmanager
 def get_connection(db_path: Path | None = None):
     """Context manager yielding a database connection with WAL mode and foreign keys."""
@@ -30,6 +33,19 @@ def get_connection(db_path: Path | None = None):
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=5000")  # wait up to 5s for locks
+    # Auto-apply pending migrations (once per path per process)
+    path_str = str(path)
+    if path_str not in _migrated_paths and MIGRATIONS:
+        current = conn.execute("PRAGMA user_version").fetchone()[0]
+        latest = MIGRATIONS[-1][0]
+        if 0 < current < latest:
+            for version, _desc, sql in MIGRATIONS:
+                if version > current:
+                    conn.executescript(sql)
+                    conn.execute(f"PRAGMA user_version = {version}")
+                    conn.commit()
+                    current = version
+        _migrated_paths.add(path_str)
     try:
         yield conn
         conn.commit()
