@@ -85,11 +85,12 @@ def _send_discord(content: str, embeds: list[dict] | None = None) -> bool:
     data = json.dumps(payload).encode("utf-8")
     req = Request(webhook_url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
+    req.add_header("User-Agent", "BBRadar/0.3.1")
 
     try:
         with urlopen(req, timeout=15) as resp:
             return resp.status in (200, 204)
-    except (HTTPError, URLError, OSError):
+    except (HTTPError, URLError, ValueError, OSError):
         return False
 
 
