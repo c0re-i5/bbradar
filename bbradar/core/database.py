@@ -45,6 +45,14 @@ def get_connection(db_path: Path | None = None):
                     conn.execute(f"PRAGMA user_version = {version}")
                     conn.commit()
                     current = version
+        # Repair: version may have been bumped by init_db without
+        # ALTER TABLE actually running (CREATE TABLE IF NOT EXISTS
+        # doesn't add columns to existing tables).
+        if current >= 2:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(projects)").fetchall()}
+            if "h1_handle" not in cols:
+                conn.execute("ALTER TABLE projects ADD COLUMN h1_handle TEXT")
+                conn.commit()
         _migrated_paths.add(path_str)
     try:
         yield conn
@@ -58,12 +66,19 @@ def get_connection(db_path: Path | None = None):
 
 def init_db(db_path: Path | None = None):
     """Create all tables if they don't exist."""
+    path = db_path or get_db_path()
+    # Check version before init — only set to latest for fresh databases.
+    pre_conn = sqlite3.connect(str(path))
+    prior_version = pre_conn.execute("PRAGMA user_version").fetchone()[0]
+    pre_conn.close()
+
     with get_connection(db_path) as conn:
         conn.executescript(SCHEMA)
-    # Set version to latest migration
-    if MIGRATIONS:
-        p = db_path or get_db_path()
-        c = sqlite3.connect(str(p))
+
+    # For fresh databases, set version to latest (SCHEMA includes everything).
+    # For existing databases, get_connection's auto-migration handles upgrades.
+    if prior_version == 0 and MIGRATIONS:
+        c = sqlite3.connect(str(path))
         _set_schema_version(c, MIGRATIONS[-1][0])
         c.commit()
         c.close()

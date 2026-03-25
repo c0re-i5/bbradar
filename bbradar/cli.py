@@ -118,6 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sp.add_parser("add", help="Add a target")
     p.add_argument("project_id", nargs="?", type=int, help="Project ID (uses active project if omitted)")
     p.add_argument("value", nargs="?", help="Target value (domain, IP, URL)")
+    p.add_argument("--project", "-p", type=int, dest="project", help="Project ID")
     p.add_argument("--type", "-t", default="domain", help="Asset type (domain/ip/url/wildcard/api/cidr)")
     p.add_argument("--tier", help="Priority tier (critical/high/medium/low)")
     p.add_argument("--out-of-scope", action="store_true", help="Mark as out of scope")
@@ -126,6 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sp.add_parser("list", help="List targets")
     p.add_argument("project_id", nargs="?", type=int, help="Project ID (uses active project if omitted)")
+    p.add_argument("--project", "-p", type=int, dest="project", help="Project ID")
     p.add_argument("--type", "-t", help="Filter by asset type")
     p.add_argument("--in-scope", action="store_true", help="In-scope only")
     p.add_argument("--out-of-scope", action="store_true", help="Out-of-scope only")
@@ -133,6 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sp.add_parser("import", help="Import targets from file")
     p.add_argument("project_id", nargs="?", type=int, help="Project ID (uses active project if omitted)")
     p.add_argument("file", help="File path (one target per line)")
+    p.add_argument("--project", "-p", type=int, dest="project", help="Project ID")
     p.add_argument("--type", "-t", default="domain", help="Asset type")
 
     p = sp.add_parser("update", help="Update a target")
@@ -624,6 +627,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _resolve_project_id(args, attr="project_id"):
     """Resolve project ID from args or active project context."""
+    # Check --project/-p flag first, then positional project_id
+    flag_val = getattr(args, "project", None)
+    if flag_val is not None:
+        return flag_val
     val = getattr(args, attr, None)
     if val is not None:
         return val
