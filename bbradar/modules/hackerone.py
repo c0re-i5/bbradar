@@ -361,7 +361,7 @@ def get_program(handle: str) -> dict:
     return {
         "id": item.get("id"),
         "handle": attrs.get("handle", ""),
-        "name": attrs.get("name", ""),
+        "name": attrs.get("name", "") or attrs.get("handle", handle),
         "url": f"https://hackerone.com/{attrs.get('handle', '')}",
         "offers_bounties": attrs.get("offers_bounties", False),
         "policy": attrs.get("policy", ""),
