@@ -18,6 +18,8 @@ Commands:
     ingest      Ingest tool output and auto-create findings
     kb          Knowledge base — sync & search CWE, CAPEC, VRT, Nuclei
     scope       Manage scope rules
+    h1          HackerOne API — programs, reports, earnings
+    dashboard   Combined BBRadar + HackerOne dashboard
     audit       View / manage audit log
     evidence    Evidence file management
     config      View/edit configuration
@@ -34,11 +36,14 @@ import textwrap
 from pathlib import Path
 
 from .core.database import init_db, get_db_path
-from .core.config import load_config, save_config, ensure_dirs, set_config_value, get_config_value, DEFAULTS
+from .core.config import (
+    load_config, save_config, ensure_dirs, set_config_value, get_config_value,
+    DEFAULTS, get_active_project, set_active_project, clear_active_project,
+)
 from .core.audit import get_audit_log
-from .core.utils import format_table, severity_color, confirm
+from .core.utils import format_table, severity_color, confirm, set_no_color
 from .modules import projects, targets, recon, vulns, notes, reports, workflows
-from .modules import vuln_templates, knowledgebase, ingest, scope
+from .modules import vuln_templates, knowledgebase, ingest, scope, hackerone
 from .modules.wizards import wizard_project, wizard_target, wizard_vuln, quick_vuln
 
 
@@ -52,6 +57,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="BBRadar — Bug Bounty Hunting Platform",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    # Global flags
+    parser.add_argument("--json", dest="json_output", action="store_true",
+                        help="Output results as JSON")
+    parser.add_argument("--no-color", dest="no_color", action="store_true",
+                        help="Disable colored output")
     sub = parser.add_subparsers(dest="command", help="Available commands")
 
     # --- init ---
@@ -59,6 +69,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- status ---
     sub.add_parser("status", help="Show workspace status")
+
+    # --- use (active project context) ---
+    p_use = sub.add_parser("use", help="Set the active project (avoids typing project_id every time)")
+    p_use.add_argument("project_id", nargs="?", type=int, help="Project ID to activate (omit to show current)")
+    p_use.add_argument("--clear", action="store_true", help="Clear the active project")
+
+    # --- completion ---
+    p_comp = sub.add_parser("completion", help="Generate shell tab-completion script")
+    p_comp.add_argument("shell", choices=["bash", "zsh", "fish"], help="Shell type")
 
     # --- project ---
     p_proj = sub.add_parser("project", help="Manage projects")
@@ -97,21 +116,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp = p_tgt.add_subparsers(dest="subcmd")
 
     p = sp.add_parser("add", help="Add a target")
-    p.add_argument("project_id", type=int, help="Project ID")
-    p.add_argument("value", help="Target value (domain, IP, URL)")
+    p.add_argument("project_id", nargs="?", type=int, help="Project ID (uses active project if omitted)")
+    p.add_argument("value", nargs="?", help="Target value (domain, IP, URL)")
     p.add_argument("--type", "-t", default="domain", help="Asset type (domain/ip/url/wildcard/api/cidr)")
     p.add_argument("--tier", help="Priority tier (critical/high/medium/low)")
     p.add_argument("--out-of-scope", action="store_true", help="Mark as out of scope")
     p.add_argument("--notes", "-n", help="Notes")
+    p.add_argument("--stdin", action="store_true", help="Read targets from stdin (one per line)")
 
     p = sp.add_parser("list", help="List targets")
-    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("project_id", nargs="?", type=int, help="Project ID (uses active project if omitted)")
     p.add_argument("--type", "-t", help="Filter by asset type")
     p.add_argument("--in-scope", action="store_true", help="In-scope only")
     p.add_argument("--out-of-scope", action="store_true", help="Out-of-scope only")
 
     p = sp.add_parser("import", help="Import targets from file")
-    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("project_id", nargs="?", type=int, help="Project ID (uses active project if omitted)")
     p.add_argument("file", help="File path (one target per line)")
     p.add_argument("--type", "-t", default="domain", help="Asset type")
 
@@ -132,8 +152,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sp.add_parser("add", help="Add recon data")
     p.add_argument("target_id", type=int, help="Target ID")
     p.add_argument("data_type", help="Data type (subdomain/port/url/tech/...)")
-    p.add_argument("value", help="Data value")
+    p.add_argument("value", nargs="?", help="Data value")
     p.add_argument("--tool", help="Source tool")
+    p.add_argument("--stdin", action="store_true", help="Read values from stdin (one per line)")
 
     p = sp.add_parser("list", help="List recon data")
     p.add_argument("--target", "-t", type=int, help="Target ID")
@@ -521,12 +542,129 @@ def build_parser() -> argparse.ArgumentParser:
     sp_db.add_parser("migrate", help="Apply pending schema migrations")
     sp_db.add_parser("status", help="Show database version and stats")
 
+    # --- h1 (HackerOne integration) ---
+    p_h1 = sub.add_parser("h1", help="HackerOne API — programs, reports, earnings")
+    sp_h1 = p_h1.add_subparsers(dest="subcmd")
+
+    sp_h1.add_parser("auth", help="Configure HackerOne API credentials")
+    sp_h1.add_parser("status", help="Check HackerOne connection status")
+
+    p = sp_h1.add_parser("programs", help="List your HackerOne programs")
+    p.add_argument("--bounties", action="store_true", default=False,
+                   help="Only show programs that pay bounties")
+
+    p = sp_h1.add_parser("search", help="Search for bug bounty programs")
+    p.add_argument("query", nargs="?", default=None, help="Search text")
+    p.add_argument("--bounties-only", action="store_true", default=True,
+                   help="Only show paid programs (default)")
+
+    p = sp_h1.add_parser("import", help="Import a H1 program as a BBRadar project")
+    p.add_argument("handle", help="HackerOne program handle (e.g. 'security')")
+
+    p = sp_h1.add_parser("scope-sync", help="Sync scope from H1 into existing project")
+    p.add_argument("project_id", type=int, help="BBRadar project ID")
+    p.add_argument("handle", help="HackerOne program handle")
+
+    p = sp_h1.add_parser("reports", help="List your submitted reports")
+    p.add_argument("--state", "-s", help="Filter by state (new, triaged, resolved, etc.)")
+    p.add_argument("--program", "-p", help="Filter by program handle")
+
+    p = sp_h1.add_parser("report", help="Show details of a specific report")
+    p.add_argument("report_id", help="HackerOne report ID")
+
+    sp_h1.add_parser("balance", help="Show your current HackerOne balance")
+    sp_h1.add_parser("earnings", help="Show earnings summary")
+
+    # --- dashboard ---
+    sub.add_parser("dashboard", help="Show combined BBRadar + HackerOne dashboard")
+
     return parser
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Helpers
+# ═══════════════════════════════════════════════════════════════════
+
+def _resolve_project_id(args, attr="project_id"):
+    """Resolve project ID from args or active project context."""
+    val = getattr(args, attr, None)
+    if val is not None:
+        return val
+    active = get_active_project()
+    if active is not None:
+        return active
+    print("❌ No project ID given and no active project set. Run 'bb use <id>' or pass a project ID.",
+          file=sys.stderr)
+    sys.exit(1)
+
+
+def _json_out(args, data):
+    """Print data as JSON if --json flag is set. Returns True if handled."""
+    if getattr(args, "json_output", False):
+        print(json.dumps(data, indent=2, default=str))
+        return True
+    return False
 
 
 # ═══════════════════════════════════════════════════════════════════
 # Command Handlers
 # ═══════════════════════════════════════════════════════════════════
+
+def cmd_use(args):
+    """Set or show the active project."""
+    if args.clear:
+        clear_active_project()
+        print("✓ Active project cleared.")
+        return
+    if args.project_id is not None:
+        p = projects.get_project(args.project_id)
+        if not p:
+            print(f"Project #{args.project_id} not found.", file=sys.stderr)
+            sys.exit(1)
+        set_active_project(args.project_id)
+        print(f"✓ Active project: [{p['id']}] {p['name']}")
+    else:
+        active = get_active_project()
+        if active:
+            p = projects.get_project(active)
+            if p:
+                print(f"Active project: [{p['id']}] {p['name']}")
+            else:
+                print(f"Active project #{active} (project not found — run 'bb use --clear')")
+        else:
+            print("No active project set. Run 'bb use <project_id>'.")
+
+
+def cmd_completion(args):
+    """Generate shell tab-completion script."""
+    commands = sorted(COMMAND_MAP.keys())
+    cmds_str = " ".join(commands)
+
+    if args.shell == "bash":
+        print(textwrap.dedent(f"""\
+            _bb_completions() {{
+                local cur="${{COMP_WORDS[COMP_CWORD]}}"
+                if [[ $COMP_CWORD -eq 1 ]]; then
+                    COMPREPLY=( $(compgen -W "{cmds_str}" -- "$cur") )
+                fi
+            }}
+            complete -F _bb_completions bb
+        """))
+    elif args.shell == "zsh":
+        print(textwrap.dedent(f"""\
+            #compdef bb
+            _bb() {{
+                local -a commands
+                commands=({cmds_str})
+                _describe 'command' commands
+            }}
+            compdef _bb bb
+        """))
+    elif args.shell == "fish":
+        for cmd in commands:
+            print(f"complete -c bb -n '__fish_use_subcommand' -a '{cmd}'")
+    print(f"\n# Add to your shell config: eval \"$(bb completion {args.shell})\"")
+
 
 def cmd_init(args):
     """Initialize BBRadar."""
@@ -554,8 +692,23 @@ def cmd_status(args):
         active = [p for p in projs if p["status"] == "active"]
         all_vulns = vulns.list_vulns(limit=10000)
         vuln_stats = vulns.get_vuln_stats()
+        active_pid = get_active_project()
+
+        status_data = {
+            "projects_total": len(projs),
+            "projects_active": len(active),
+            "vuln_stats": vuln_stats,
+            "active_project": active_pid,
+            "data_dir": cfg["data_dir"],
+        }
+        if _json_out(args, status_data):
+            return
 
         print("═══ BBRadar Status ═══\n")
+        if active_pid:
+            ap = projects.get_project(active_pid)
+            name = ap["name"] if ap else "(unknown)"
+            print(f"  Active:    [{active_pid}] {name}")
         print(f"  Projects:  {len(projs)} total, {len(active)} active")
         print(f"  Findings:  {vuln_stats['total']} total")
         for sev in ("critical", "high", "medium", "low"):
@@ -585,6 +738,8 @@ def cmd_project(args):
 
     elif args.subcmd == "list":
         data = projects.list_projects(status=args.status)
+        if _json_out(args, data):
+            return
         if not data:
             print("No projects found.")
             return
@@ -594,6 +749,9 @@ def cmd_project(args):
         p = projects.get_project(args.id)
         if not p:
             print(f"Project #{args.id} not found.")
+            return
+        stats = projects.get_project_stats(args.id)
+        if _json_out(args, {"project": p, "stats": stats}):
             return
         print(f"\n═══ Project: {p['name']} ═══\n")
         for k, v in p.items():
@@ -633,27 +791,45 @@ def cmd_project(args):
 
 def cmd_target(args):
     if args.subcmd == "add":
-        tid = targets.add_target(
-            args.project_id, args.type, args.value,
-            in_scope=not args.out_of_scope, tier=args.tier, notes=args.notes,
-        )
-        print(f"✓ Added target [{tid}] {args.value}")
+        pid = _resolve_project_id(args)
+        if getattr(args, "stdin", False):
+            count = 0
+            for line in sys.stdin:
+                val = line.strip()
+                if val and not val.startswith("#"):
+                    targets.add_target(pid, args.type, val,
+                                       in_scope=not args.out_of_scope, tier=args.tier)
+                    count += 1
+            print(f"✓ Added {count} targets from stdin")
+        else:
+            if not args.value:
+                print("❌ Provide a target value or use --stdin", file=sys.stderr)
+                sys.exit(1)
+            tid = targets.add_target(
+                pid, args.type, args.value,
+                in_scope=not args.out_of_scope, tier=args.tier, notes=args.notes,
+            )
+            print(f"✓ Added target [{tid}] {args.value}")
 
     elif args.subcmd == "list":
+        pid = _resolve_project_id(args)
         in_scope = None
         if args.in_scope:
             in_scope = True
         elif args.out_of_scope:
             in_scope = False
-        data = targets.list_targets(args.project_id, asset_type=args.type, in_scope=in_scope)
+        data = targets.list_targets(pid, asset_type=args.type, in_scope=in_scope)
+        if _json_out(args, data):
+            return
         if not data:
             print("No targets found.")
             return
         print(format_table(data, ["id", "asset_type", "value", "in_scope", "tier"]))
 
     elif args.subcmd == "import":
+        pid = _resolve_project_id(args)
         count = targets.import_targets_from_file(
-            args.project_id, args.file, asset_type=args.type,
+            pid, args.file, asset_type=args.type,
         )
         print(f"✓ Imported {count} targets")
 
@@ -681,17 +857,30 @@ def cmd_target(args):
 
 def cmd_recon(args):
     if args.subcmd == "add":
-        rid = recon.add_recon(args.target_id, args.data_type, args.value, source_tool=args.tool)
-        if rid:
-            print(f"✓ Added recon [{rid}] {args.data_type}: {args.value}")
+        if getattr(args, "stdin", False):
+            count = recon.bulk_add_recon(
+                args.target_id, args.data_type,
+                [line.strip() for line in sys.stdin if line.strip()],
+                source_tool=args.tool,
+            )
+            print(f"✓ Added {count} recon entries from stdin")
         else:
-            print("Duplicate entry — already exists.")
+            if not args.value:
+                print("❌ Provide a value or use --stdin", file=sys.stderr)
+                sys.exit(1)
+            rid = recon.add_recon(args.target_id, args.data_type, args.value, source_tool=args.tool)
+            if rid:
+                print(f"✓ Added recon [{rid}] {args.data_type}: {args.value}")
+            else:
+                print("Duplicate entry — already exists.")
 
     elif args.subcmd == "list":
         data = recon.list_recon(
             target_id=args.target, project_id=args.project,
             data_type=args.type, source_tool=args.tool, limit=args.limit,
         )
+        if _json_out(args, data):
+            return
         if not data:
             print("No recon data found.")
             return
@@ -763,6 +952,8 @@ def cmd_vuln(args):
             project_id=args.project, severity=args.severity,
             status=args.status, vuln_type=args.type,
         )
+        if _json_out(args, data):
+            return
         if not data:
             print("No findings.")
             return
@@ -774,6 +965,8 @@ def cmd_vuln(args):
         v = vulns.get_vuln(args.id)
         if not v:
             print(f"Finding #{args.id} not found.")
+            return
+        if _json_out(args, v):
             return
         print(f"\n═══ Finding: {v['title']} ═══\n")
         for k, val in v.items():
@@ -1856,12 +2049,209 @@ def cmd_evidence(args):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# HackerOne Integration
+# ═══════════════════════════════════════════════════════════════════
+
+def cmd_h1(args):
+    """HackerOne API integration."""
+    import getpass
+
+    if args.subcmd == "auth":
+        print("\n═══ HackerOne API Setup ═══\n")
+        print("  Get your API token at: https://hackerone.com/settings/api_token\n")
+        username = input("  API Username (identifier): ").strip()
+        if not username:
+            print("  Cancelled.")
+            return
+        token = getpass.getpass("  API Token: ").strip()
+        if not token:
+            print("  Cancelled.")
+            return
+
+        print("  Verifying credentials...")
+        hackerone.configure_auth(username, token)
+        print(f"\n  ✓ Authenticated as '{username}'. Credentials saved.")
+        print(f"  Try: bb h1 programs\n")
+
+    elif args.subcmd == "status":
+        status = hackerone.check_auth()
+        if not status["configured"]:
+            print("\n  HackerOne: not configured. Run 'bb h1 auth' to connect.\n")
+        elif status["valid"]:
+            print(f"\n  HackerOne: ✓ connected as '{status['username']}'\n")
+        else:
+            print(f"\n  HackerOne: ✗ credentials invalid (username: {status['username']})")
+            print(f"  Run 'bb h1 auth' to reconfigure.\n")
+
+    elif args.subcmd == "programs":
+        bounties = args.bounties if args.bounties else None
+        progs = hackerone.list_programs(offers_bounties=bounties)
+        if not progs:
+            print("No programs found.")
+            return
+        print(f"\n  Your HackerOne Programs ({len(progs)}):\n")
+        rows = []
+        for p in progs:
+            bounty = "💰" if p["offers_bounties"] else "  "
+            rows.append([p["handle"], p["name"][:40], bounty, p["state"]])
+        print(format_table(["Handle", "Name", "$$", "State"], rows))
+
+    elif args.subcmd == "search":
+        progs = hackerone.search_programs(
+            query=args.query,
+            bounties_only=args.bounties_only,
+        )
+        if not progs:
+            print("No programs found matching your search.")
+            return
+        print(f"\n  Programs Found ({len(progs)}):\n")
+        rows = []
+        for p in progs:
+            bounty = "💰" if p["offers_bounties"] else "  "
+            sub = p.get("submission_state", "")
+            rows.append([p["handle"], p["name"][:40], bounty, sub])
+        print(format_table(["Handle", "Name", "$$", "Submissions"], rows))
+        print(f"\n  Import a program: bb h1 import <handle>\n")
+
+    elif args.subcmd == "import":
+        print(f"  Importing program '{args.handle}' from HackerOne...")
+        result = hackerone.import_program(args.handle)
+        print(f"\n  ✓ Created project [{result['project_id']}]")
+        print(f"    Targets imported: {result['targets_added']}")
+        print(f"    Scope rules:     {result['scope_rules_added']}")
+        print(f"\n  Next steps:")
+        print(f"    bb project show {result['project_id']}")
+        print(f"    bb scope list {result['project_id']}")
+        print(f"    bb recon run {result['project_id']}\n")
+
+    elif args.subcmd == "scope-sync":
+        result = hackerone.sync_scope(args.project_id, args.handle)
+        print(f"\n  ✓ Scope synced from '{args.handle}'")
+        print(f"    New targets: {result['new_targets']}")
+        print(f"    New rules:   {result['new_rules']}\n")
+
+    elif args.subcmd == "reports":
+        h1_reports = hackerone.list_reports(
+            state=getattr(args, "state", None),
+            program=getattr(args, "program", None),
+        )
+        if not h1_reports:
+            print("No reports found.")
+            return
+        print(f"\n  Your HackerOne Reports ({len(h1_reports)}):\n")
+        rows = []
+        for r in h1_reports:
+            sev = r.get("severity_rating", "-")
+            rows.append([r["id"], r["title"][:50], r["state"], sev, r["created_at"][:10]])
+        print(format_table(["ID", "Title", "State", "Severity", "Date"], rows))
+
+    elif args.subcmd == "report":
+        r = hackerone.get_report(args.report_id)
+        print(f"\n═══ Report #{r['id']} ═══\n")
+        print(f"  Title:    {r['title']}")
+        print(f"  State:    {r['state']} / {r.get('substate', '')}")
+        print(f"  Severity: {r.get('severity_rating', 'N/A')}")
+        print(f"  Created:  {r['created_at']}")
+        if r.get("triaged_at"):
+            print(f"  Triaged:  {r['triaged_at']}")
+        if r.get("bounty_awarded_at"):
+            print(f"  Bounty:   {r['bounty_awarded_at']}")
+        if r.get("closed_at"):
+            print(f"  Closed:   {r['closed_at']}")
+        print(f"  URL:      {r['url']}")
+        if r.get("vulnerability_information"):
+            print(f"\n  Description:\n{textwrap.indent(r['vulnerability_information'][:500], '    ')}")
+        print()
+
+    elif args.subcmd == "balance":
+        bal = hackerone.get_balance()
+        print(f"\n  HackerOne Balance: ${bal['balance']} {bal['currency']}\n")
+
+    elif args.subcmd == "earnings":
+        summary = hackerone.get_earnings_summary()
+        print(f"\n═══ HackerOne Earnings ═══\n")
+        print(f"  Total earned:    ${summary['total_earned']:.2f}")
+        print(f"  Total bounties:  {summary['total_bounties']}")
+        print(f"  Average bounty:  ${summary['average_bounty']:.2f}")
+        if summary["by_month"]:
+            print(f"\n  Monthly Breakdown:")
+            for month, amount in list(summary["by_month"].items())[:12]:
+                bar = "█" * max(1, int(amount / 100))
+                print(f"    {month}  ${amount:>8.2f}  {bar}")
+        print()
+
+    else:
+        print("Usage: bb h1 {auth|status|programs|search|import|scope-sync|reports|report|balance|earnings}")
+
+
+def cmd_dashboard(args):
+    """Show combined BBRadar + HackerOne dashboard."""
+    data = hackerone.get_dashboard_data()
+    local = data["local"]
+    h1 = data["hackerone"]
+
+    print("\n╔═══════════════════════════════════════════════════╗")
+    print("║              BBRadar Dashboard                    ║")
+    print("╚═══════════════════════════════════════════════════╝\n")
+
+    # Local stats
+    print("  📁 Projects")
+    print(f"    Active:  {local['active_projects']} / {local['total_projects']} total")
+    if local.get("projects"):
+        for p in local["projects"][:5]:
+            print(f"      [{p['id']}] {p['name']}")
+
+    print(f"\n  🔍 Findings: {local['total_vulns']} total")
+    for sev in ("critical", "high", "medium", "low"):
+        count = local["vulns_by_severity"].get(sev, 0)
+        if count:
+            print(f"    {severity_color(sev)}: {count}")
+
+    status_parts = []
+    for st in ("new", "confirmed", "reported", "accepted", "resolved"):
+        count = local["vulns_by_status"].get(st, 0)
+        if count:
+            status_parts.append(f"{st}: {count}")
+    if status_parts:
+        print(f"    Pipeline: {' → '.join(status_parts)}")
+
+    if local.get("local_bounty_total"):
+        print(f"\n  💰 Local bounty tracking: ${local['local_bounty_total']:.2f}")
+
+    # HackerOne stats
+    print(f"\n  {'─' * 45}")
+    if h1.get("connected"):
+        print(f"\n  🌐 HackerOne ({h1['username']})")
+        print(f"    Balance:  ${h1['balance']} {h1['currency']}")
+        print(f"    Reports:  {h1['total_reports']} submitted")
+        if h1.get("report_states"):
+            parts = [f"{st}: {cnt}" for st, cnt in h1["report_states"].items()]
+            print(f"    States:   {', '.join(parts)}")
+
+        # Hit rate
+        total = h1["total_reports"]
+        resolved = h1["report_states"].get("resolved", 0)
+        triaged = h1["report_states"].get("triaged", 0)
+        if total > 0:
+            accepted = resolved + triaged
+            rate = (accepted / total) * 100
+            print(f"    Hit rate: {rate:.0f}% ({accepted}/{total} accepted)")
+    else:
+        print(f"\n  🌐 HackerOne: not connected")
+        print(f"    Run 'bb h1 auth' to connect your account.")
+
+    print()
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Main Entry Point
 # ═══════════════════════════════════════════════════════════════════
 
 COMMAND_MAP = {
     "init": cmd_init,
     "status": cmd_status,
+    "use": cmd_use,
+    "completion": cmd_completion,
     "project": cmd_project,
     "target": cmd_target,
     "recon": cmd_recon,
@@ -1878,6 +2268,8 @@ COMMAND_MAP = {
     "config": cmd_config,
     "db": cmd_db,
     "evidence": cmd_evidence,
+    "h1": cmd_h1,
+    "dashboard": cmd_dashboard,
 }
 
 
@@ -1885,10 +2277,16 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
+    # Handle --no-color / NO_COLOR env var
+    if getattr(args, "no_color", False) or os.environ.get("NO_COLOR") is not None:
+        set_no_color(True)
+
     if not args.command:
         parser.print_help()
-        print("\n💡 Quick start: bb init → bb wizard project → bb wizard vuln")
-        print("💡 Or manual:  bb init → bb project create → bb target add → bb recon run")
+        print("\n💡 Quick start: bb init → bb use <id> → bb wizard vuln")
+        print("💡 HackerOne:  bb h1 auth → bb h1 import <program> → bb dashboard")
+        print("💡 Piping:     cat domains.txt | bb target add --stdin --type domain")
+        print("💡 JSON:       bb --json project list | jq '.[] | .name'")
         sys.exit(0)
 
     handler = COMMAND_MAP.get(args.command)

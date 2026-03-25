@@ -7,6 +7,7 @@
     <a href="#installation">Installation</a> •
     <a href="#quick-start">Quick Start</a> •
     <a href="#features">Features</a> •
+    <a href="#hackerone-integration">HackerOne</a> •
     <a href="#supported-tools">Supported Tools</a> •
     <a href="#legal">Legal</a>
   </p>
@@ -82,25 +83,52 @@ bb init
 # 2. Start a new project with the interactive wizard
 bb wizard project
 
-# 3. Add a vulnerability using the guided wizard
-bb wizard vuln
+# 3. Set it as your active project (skip typing the ID every time)
+bb use 1
 
-# 4. Or use the quick one-liner for fast entry
-bb vuln quick --project 1 --title "Reflected XSS in search" --severity high
+# 4. Add a vulnerability using the guided wizard
+bb wizard vuln
 
 # 5. Generate a report
 bb report generate --project 1 --format markdown
+```
+
+### HackerOne workflow
+
+```bash
+# Import a program directly from HackerOne (creates project + targets + scope)
+bb h1 auth
+bb h1 import security
+bb use 1
+bb dashboard
 ```
 
 ### Manual workflow (without wizards)
 
 ```bash
 bb project create "HackerOne - Acme Corp" --platform hackerone --url "https://hackerone.com/acme"
-bb target add --project 1 --type domain --value "acme.com"
-bb scope add --project 1 --type include --pattern "*.acme.com"
-bb recon run --project 1 --tool subfinder
-bb vuln create --project 1 --title "SQL Injection in /api/users" --severity critical
+bb use 1
+bb target add 1 acme.com --type domain
+bb scope add 1 "*.acme.com"
+bb recon run subfinder 1
+bb vuln create 1 "SQL Injection in /api/users" --severity critical
 bb report generate --project 1
+```
+
+### Piping & scripting
+
+```bash
+# Pipe targets from a file
+cat domains.txt | bb target add --stdin --type domain
+
+# JSON output for scripting
+bb --json target list | jq '.[].value'
+bb --json vuln list | jq '.[] | select(.severity == "critical")'
+
+# Disable colors when piping
+bb --no-color vuln list > findings.txt
+# Or set the NO_COLOR env var globally
+export NO_COLOR=1
 ```
 
 ## Features
@@ -186,6 +214,43 @@ bb wizard vuln      # Report vulnerability from templates with dedup check
 bb wizard quick     # Rapid finding entry
 ```
 
+### HackerOne Integration
+
+Connect BBRadar to HackerOne for program discovery, scope import, report
+tracking, and earnings monitoring:
+
+```bash
+bb h1 auth                          # Configure API credentials
+bb h1 status                        # Check connection
+bb h1 programs                      # List your programs
+bb h1 search "ecommerce"            # Discover programs
+bb h1 import <handle>               # Import program → project + targets + scope
+bb h1 scope-sync <project_id> <handle>  # Sync scope updates
+bb h1 reports                       # List your submitted reports
+bb h1 balance                       # Current balance
+bb h1 earnings                      # Earnings summary
+bb dashboard                        # Combined local + H1 dashboard
+```
+
+Credentials can be set via environment variables (recommended) or config file:
+
+```bash
+export BBRADAR_H1_USERNAME="your_username"
+export BBRADAR_H1_API_TOKEN="your_api_token"
+```
+
+### Active Project Context
+
+Avoid typing the project ID on every command:
+
+```bash
+bb use 3                # Set project 3 as active
+bb use                  # Show current active project
+bb target list          # Automatically uses project 3
+bb target add example.com --type domain   # Same — no ID needed
+bb use --clear          # Clear the active project
+```
+
 ### Reports
 Generate structured reports in multiple formats:
 
@@ -228,10 +293,11 @@ bb db status                # Show DB version and migration state
 |---------|-------------|
 | `bb init` | Initialize BBRadar (first-time setup) |
 | `bb status` | Show workspace status |
+| `bb use` | Set/show active project (skip typing project IDs) |
 | `bb project` | Manage projects (create, list, show, delete) |
-| `bb target` | Manage targets (add, list, remove) |
+| `bb target` | Manage targets (add, list, remove, import, `--stdin`) |
 | `bb scope` | Manage scope rules (add, list, check, remove) |
-| `bb recon` | Manage reconnaissance data |
+| `bb recon` | Manage reconnaissance data (add, list, import, run, `--stdin`) |
 | `bb vuln` | Track vulnerabilities (create, list, update, transitions, duplicates, merge, quick) |
 | `bb note` | Manage assessment notes |
 | `bb evidence` | Evidence files (stats, orphans, cleanup) |
@@ -241,9 +307,19 @@ bb db status                # Show DB version and migration state
 | `bb wizard` | Interactive wizards (project, target, vuln, quick) |
 | `bb templates` | Browse / search vulnerability templates |
 | `bb kb` | Knowledge base (sync, search, stats) |
+| `bb h1` | HackerOne API (auth, programs, import, reports, earnings) |
+| `bb dashboard` | Combined BBRadar + HackerOne dashboard |
 | `bb config` | View / edit configuration |
 | `bb audit` | Audit log (log, stats, purge, export) |
 | `bb db` | Database management (backup, restore, migrate, status) |
+| `bb completion` | Generate shell tab-completion (bash, zsh, fish) |
+
+### Global Flags
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output results as JSON (pipe to `jq`, scripts, etc.) |
+| `--no-color` | Disable ANSI colors (also respects `NO_COLOR` env var) |
 
 Run `bb <command> --help` for detailed usage of any command.
 
@@ -260,13 +336,17 @@ bbradar/
 ├── cli.py              # CLI entry point and command routing
 ├── core/
 │   ├── database.py     # SQLite connection management and migrations
-│   └── audit.py        # Audit logging
+│   ├── config.py       # Configuration + active project context
+│   ├── audit.py        # Audit logging
+│   └── utils.py        # Shared utilities (tables, colors, shell helpers)
 ├── modules/
 │   ├── projects.py     # Project CRUD
 │   ├── targets.py      # Target management
 │   ├── vulns.py        # Vulnerability tracking + state machine
 │   ├── notes.py        # Notes
 │   ├── scope.py        # Scope rule engine
+│   ├── recon.py        # Recon data + tool integrations (subfinder, nmap, httpx)
+│   ├── hackerone.py    # HackerOne API integration
 │   ├── evidence.py     # Evidence file management
 │   ├── reports.py      # Report generation (MD, HTML, PDF, JSON)
 │   ├── ingest.py       # Tool output ingestion router
@@ -280,11 +360,15 @@ bbradar/
 
 ## Security
 
-- All data stored locally in `~/.bbradar/` with restrictive permissions
+- All data stored locally in `~/.bbradar/` with restrictive permissions (0700)
 - SQLite database with WAL mode for safe concurrent access
 - No data leaves the machine — no cloud dependencies, no telemetry
 - Full audit trail of every creation, update, deletion, and export
-- Tool commands executed through safe argument handling
+- Tool commands executed via subprocess argument lists (no shell injection)
+- Target/domain input validation before passing to external tools
+- All SQL queries use parameterized placeholders (no string concatenation)
+- YAML parsed with `yaml.safe_load()` only
+- HackerOne credentials support environment variables (avoid plaintext on disk)
 - Concurrent access protection with SQLite busy timeout
 
 ## Legal

@@ -40,6 +40,11 @@ DEFAULTS = {
         "nikto": "",
         "whatweb": "",
     },
+    # HackerOne API credentials
+    "hackerone": {
+        "username": "",
+        "api_token": "",
+    },
 }
 
 
@@ -102,3 +107,31 @@ def set_config_value(key: str, value, cfg: dict | None = None) -> dict:
     target[parts[-1]] = value
     save_config(cfg)
     return cfg
+
+
+# ── Active project context ──────────────────────────────────────
+
+_ACTIVE_PROJECT_FILE = DEFAULT_DATA_DIR / ".active_project"
+
+
+def get_active_project() -> int | None:
+    """Return the active project ID, or None if not set."""
+    if _ACTIVE_PROJECT_FILE.exists():
+        text = _ACTIVE_PROJECT_FILE.read_text().strip()
+        if text.isdigit():
+            return int(text)
+    return None
+
+
+def set_active_project(project_id: int | None):
+    """Set (or clear) the active project."""
+    _ACTIVE_PROJECT_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if project_id is None:
+        _ACTIVE_PROJECT_FILE.unlink(missing_ok=True)
+    else:
+        _ACTIVE_PROJECT_FILE.write_text(str(project_id))
+
+
+def clear_active_project():
+    """Clear the active project."""
+    set_active_project(None)

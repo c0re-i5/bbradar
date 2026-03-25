@@ -6,11 +6,18 @@ Integrates with common Kali tools for automated data ingestion.
 """
 
 import json
+import re
+import shlex
 from pathlib import Path
 
 from ..core.database import get_connection
 from ..core.audit import log_action
 from ..core.utils import run_tool
+
+# Regex for validating domains/IPs/CIDRs before passing to external tools
+_SAFE_TARGET_RE = re.compile(
+    r'^[a-zA-Z0-9._:/%\[\]-]+$'
+)
 
 VALID_DATA_TYPES = {
     "subdomain", "port", "service", "tech", "url", "parameter",
@@ -146,10 +153,21 @@ def export_recon(target_id: int = None, project_id: int = None,
 # Tool integrations — parse output from common Kali tools
 # ---------------------------------------------------------------------------
 
+def _validate_target(value: str) -> str:
+    """Validate a target value (domain, IP, CIDR) is safe for external tools."""
+    value = value.strip()
+    if not value or not _SAFE_TARGET_RE.match(value):
+        raise ValueError(f"Invalid target value: {value!r}")
+    return value
+
+
 def ingest_subfinder(target_id: int, domain: str, extra_args: str = "",
                      timeout: int = 300, db_path=None) -> int:
     """Run subfinder and ingest results."""
-    cmd = f"subfinder -d {domain} -silent {extra_args}"
+    domain = _validate_target(domain)
+    cmd = ["subfinder", "-d", domain, "-silent"]
+    if extra_args:
+        cmd.extend(shlex.split(extra_args))
     rc, stdout, stderr = run_tool(cmd, timeout=timeout)
     if rc != 0 and not stdout.strip():
         raise RuntimeError(f"subfinder failed: {stderr}")
@@ -160,7 +178,11 @@ def ingest_subfinder(target_id: int, domain: str, extra_args: str = "",
 def ingest_nmap(target_id: int, target_value: str, extra_args: str = "-sV -sC",
                 timeout: int = 600, db_path=None) -> int:
     """Run nmap and ingest open ports/services."""
-    cmd = f"nmap {extra_args} {target_value} -oG -"
+    target_value = _validate_target(target_value)
+    cmd = ["nmap"]
+    if extra_args:
+        cmd.extend(shlex.split(extra_args))
+    cmd.extend([target_value, "-oG", "-"])
     rc, stdout, stderr = run_tool(cmd, timeout=timeout)
     count = 0
     for line in stdout.splitlines():
@@ -189,14 +211,28 @@ def ingest_httpx(target_id: int, input_file: str = None, targets: list[str] = No
                  extra_args: str = "-silent -status-code -title -tech-detect",
                  timeout: int = 300, db_path=None) -> int:
     """Run httpx and ingest live URLs and tech data."""
+    import subprocess as _subprocess
+
+    extra = shlex.split(extra_args) if extra_args else []
     if input_file:
-        cmd = f"httpx -l {input_file} {extra_args}"
+        cmd = ["httpx", "-l", str(input_file)] + extra
+        rc, stdout, stderr = run_tool(cmd, timeout=timeout)
     elif targets:
-        target_str = "\n".join(targets)
-        cmd = f"echo '{target_str}' | httpx {extra_args}"
+        validated = [_validate_target(t) for t in targets]
+        target_str = "\n".join(validated)
+        cmd = ["httpx"] + extra
+        try:
+            proc = _subprocess.run(
+                cmd, input=target_str, capture_output=True,
+                text=True, timeout=timeout,
+            )
+            rc, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
+        except _subprocess.TimeoutExpired:
+            rc, stdout, stderr = -1, "", f"httpx timed out after {timeout}s"
+        except FileNotFoundError:
+            rc, stdout, stderr = -1, "", "Command not found: httpx"
     else:
         return 0
-    rc, stdout, stderr = run_tool(cmd, timeout=timeout)
     count = 0
     for line in stdout.splitlines():
         line = line.strip()

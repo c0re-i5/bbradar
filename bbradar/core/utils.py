@@ -3,6 +3,7 @@ Shared utilities for BBRadar.
 """
 
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -23,13 +24,17 @@ def slugify(text: str) -> str:
     return text.strip("-")
 
 
-def run_tool(command: str, timeout: int = 300) -> tuple[int, str, str]:
+def run_tool(command, timeout: int = 300) -> tuple[int, str, str]:
     """
     Run an external tool safely and return (returncode, stdout, stderr).
 
-    The command string is passed through shlex.split for safe argument handling.
+    Accepts either a list of arguments (preferred, avoids shell injection)
+    or a string (split via shlex for backward compatibility).
     """
-    args = shlex.split(command)
+    if isinstance(command, str):
+        args = shlex.split(command)
+    else:
+        args = list(command)
     try:
         proc = subprocess.run(
             args,
@@ -70,8 +75,20 @@ def format_table(rows: list[dict], columns: list[str] = None) -> str:
     return "\n".join(lines)
 
 
+# Global flag — set by CLI when --no-color is used or NO_COLOR env is set
+_no_color = False
+
+
+def set_no_color(value: bool = True):
+    """Disable ANSI color output."""
+    global _no_color
+    _no_color = value
+
+
 def severity_color(severity: str) -> str:
     """Return ANSI color code for severity level."""
+    if _no_color or os.environ.get("NO_COLOR") is not None:
+        return severity
     colors = {
         "critical": "\033[91m",  # bright red
         "high": "\033[31m",      # red
