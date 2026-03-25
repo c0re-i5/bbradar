@@ -2122,8 +2122,8 @@ def cmd_h1(args):
         rows = []
         for p in progs:
             bounty = "💰" if p["offers_bounties"] else "  "
-            rows.append([p["handle"], p["name"][:40], bounty, p["state"]])
-        print(format_table(["Handle", "Name", "$$", "State"], rows))
+            rows.append({"handle": p["handle"], "name": p["name"][:40], "bounty": bounty, "state": p["state"]})
+        print(format_table(rows, ["handle", "name", "bounty", "state"]))
 
     elif args.subcmd == "search":
         progs = hackerone.search_programs(
@@ -2138,8 +2138,8 @@ def cmd_h1(args):
         for p in progs:
             bounty = "💰" if p["offers_bounties"] else "  "
             sub = p.get("submission_state", "")
-            rows.append([p["handle"], p["name"][:40], bounty, sub])
-        print(format_table(["Handle", "Name", "$$", "Submissions"], rows))
+            rows.append({"handle": p["handle"], "name": p["name"][:40], "bounty": bounty, "submissions": sub})
+        print(format_table(rows, ["handle", "name", "bounty", "submissions"]))
         print(f"\n  Import a program: bb h1 import <handle>\n")
 
     elif args.subcmd == "import":
@@ -2171,8 +2171,8 @@ def cmd_h1(args):
         rows = []
         for r in h1_reports:
             sev = r.get("severity_rating", "-")
-            rows.append([r["id"], r["title"][:50], r["state"], sev, r["created_at"][:10]])
-        print(format_table(["ID", "Title", "State", "Severity", "Date"], rows))
+            rows.append({"id": r["id"], "title": r["title"][:50], "state": r["state"], "severity": sev, "date": r["created_at"][:10]})
+        print(format_table(rows, ["id", "title", "state", "severity", "date"]))
 
     elif args.subcmd == "report":
         r = hackerone.get_report(args.report_id)
@@ -2232,9 +2232,9 @@ def cmd_h1(args):
             linked = f"[{w['project_id']}]" if w['project_id'] else "-"
             checked = w['last_checked_at'][:16] if w['last_checked_at'] else "never"
             changed = w['last_changed_at'][:16] if w['last_changed_at'] else "never"
-            rows.append([w['handle'], w['name'] or '', str(w['scope_count']),
-                        linked, checked, changed])
-        print(format_table(["Handle", "Name", "Scope", "Project", "Last Checked", "Last Change"], rows))
+            rows.append({"handle": w['handle'], "name": w['name'] or '', "scope": str(w['scope_count']),
+                        "project": linked, "last_checked": checked, "last_change": changed})
+        print(format_table(rows, ["handle", "name", "scope", "project", "last_checked", "last_change"]))
 
     elif args.subcmd == "check":
         if args.new_programs:
@@ -2246,8 +2246,8 @@ def cmd_h1(args):
             rows = []
             for p in new_progs[:25]:
                 bounty = "💰" if p.get("offers_bounties") else "  "
-                rows.append([p['handle'], p['name'][:40], bounty])
-            print(format_table(["Handle", "Name", "$$"], rows))
+                rows.append({"handle": p['handle'], "name": p['name'][:40], "bounty": bounty})
+            print(format_table(rows, ["handle", "name", "bounty"]))
             print(f"\n  Watch a program: bb h1 watch <handle>\n")
             return
 
