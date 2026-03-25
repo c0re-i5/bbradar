@@ -575,6 +575,21 @@ def build_parser() -> argparse.ArgumentParser:
     sp_h1.add_parser("balance", help="Show your current HackerOne balance")
     sp_h1.add_parser("earnings", help="Show earnings summary")
 
+    p = sp_h1.add_parser("watch", help="Watch a H1 program for scope changes")
+    p.add_argument("handle", help="HackerOne program handle")
+
+    p = sp_h1.add_parser("unwatch", help="Stop watching a program")
+    p.add_argument("handle", help="HackerOne program handle")
+
+    sp_h1.add_parser("watchlist", help="List all watched programs")
+
+    p = sp_h1.add_parser("check", help="Check watched programs for scope changes")
+    p.add_argument("handle", nargs="?", default=None, help="Specific program handle (default: all)")
+    p.add_argument("--auto-import", action="store_true", default=False,
+                   help="Auto-import new scope into linked projects")
+    p.add_argument("--new-programs", action="store_true", default=False,
+                   help="Scan for newly launched H1 programs")
+
     # --- dashboard ---
     sub.add_parser("dashboard", help="Show combined BBRadar + HackerOne dashboard")
 
@@ -2180,8 +2195,83 @@ def cmd_h1(args):
                 print(f"    {month}  ${amount:>8.2f}  {bar}")
         print()
 
+    elif args.subcmd == "watch":
+        result = hackerone.watch_program(args.handle)
+        print(f"\n  ✓ Watching '{result['handle']}' ({result['name']})")
+        print(f"    Scope snapshot: {result['scopes_snapshotted']} assets")
+        if result['project_id']:
+            print(f"    Linked to project [{result['project_id']}]")
+        print(f"\n  Check for changes: bb h1 check {result['handle']}\n")
+
+    elif args.subcmd == "unwatch":
+        hackerone.unwatch_program(args.handle)
+        print(f"\n  ✓ Stopped watching '{args.handle}'.\n")
+
+    elif args.subcmd == "watchlist":
+        watched = hackerone.list_watched()
+        if not watched:
+            print("\n  No programs being watched. Run 'bb h1 watch <handle>' to start.\n")
+            return
+        print(f"\n  Watched Programs ({len(watched)}):\n")
+        rows = []
+        for w in watched:
+            linked = f"[{w['project_id']}]" if w['project_id'] else "-"
+            checked = w['last_checked_at'][:16] if w['last_checked_at'] else "never"
+            changed = w['last_changed_at'][:16] if w['last_changed_at'] else "never"
+            rows.append([w['handle'], w['name'] or '', str(w['scope_count']),
+                        linked, checked, changed])
+        print(format_table(["Handle", "Name", "Scope", "Project", "Last Checked", "Last Change"], rows))
+
+    elif args.subcmd == "check":
+        if args.new_programs:
+            new_progs = hackerone.check_new_programs()
+            if not new_progs:
+                print("\n  No new programs found.\n")
+                return
+            print(f"\n  New HackerOne Programs ({len(new_progs)}):\n")
+            rows = []
+            for p in new_progs[:25]:
+                bounty = "💰" if p.get("offers_bounties") else "  "
+                rows.append([p['handle'], p['name'][:40], bounty])
+            print(format_table(["Handle", "Name", "$$"], rows))
+            print(f"\n  Watch a program: bb h1 watch <handle>\n")
+            return
+
+        if args.handle:
+            results = [hackerone.check_program(args.handle, auto_import=args.auto_import)]
+        else:
+            results = hackerone.check_all_watched(auto_import=args.auto_import)
+
+        if not results:
+            print("\n  No programs being watched. Run 'bb h1 watch <handle>' to start.\n")
+            return
+
+        total_changes = 0
+        for r in results:
+            status = "🔔 CHANGES" if r['has_changes'] else "✓ no changes"
+            print(f"\n  [{r['handle']}] {r['name']} — {status}")
+            if r['new']:
+                print(f"    + {len(r['new'])} new assets:")
+                for s in r['new']:
+                    bounty = " 💰" if s.get('eligible_for_bounty') else ""
+                    print(f"      {s['asset_type']:12s} {s['asset_identifier']}{bounty}")
+            if r['removed']:
+                print(f"    - {len(r['removed'])} removed assets:")
+                for s in r['removed']:
+                    print(f"      {s['asset_type']:12s} {s['asset_identifier']}")
+            if r['changed']:
+                print(f"    ~ {len(r['changed'])} changed assets:")
+                for s in r['changed']:
+                    changes = ', '.join(f"{k}: {v['old']}→{v['new']}" for k, v in s['changes'].items())
+                    print(f"      {s['asset_identifier']}: {changes}")
+            if r.get('auto_imported'):
+                print(f"    ↳ Auto-imported {r['auto_imported']} new targets into project [{r['project_id']}]")
+            total_changes += len(r.get('new', [])) + len(r.get('removed', [])) + len(r.get('changed', []))
+
+        print(f"\n  Summary: {len(results)} programs checked, {total_changes} total changes.\n")
+
     else:
-        print("Usage: bb h1 {auth|status|programs|search|import|scope-sync|reports|report|balance|earnings}")
+        print("Usage: bb h1 {auth|status|programs|search|import|scope-sync|reports|report|balance|earnings|watch|unwatch|watchlist|check}")
 
 
 def cmd_dashboard(args):

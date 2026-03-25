@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bbradar"
-version = "0.2.0"
+version = "0.3.0"
 description = "BBRadar — Local-first bug bounty hunting platform for Kali Linux"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -136,6 +136,7 @@ CREATE TABLE IF NOT EXISTS projects (
     name            TEXT    NOT NULL UNIQUE,
     platform        TEXT,                              -- e.g. HackerOne, Bugcrowd, Intigriti, private
     program_url     TEXT,
+    h1_handle       TEXT,                              -- HackerOne program handle for watch/sync
     scope_raw       TEXT,                              -- raw scope text from program page
     rules           TEXT,                              -- rules of engagement notes
     status          TEXT    NOT NULL DEFAULT 'active',  -- active | paused | completed | archived
@@ -336,6 +337,34 @@ CREATE TABLE IF NOT EXISTS scope_rules (
 );
 
 CREATE INDEX IF NOT EXISTS idx_scope_rules_project ON scope_rules(project_id);
+
+-- ═══ HackerOne Watch ═══
+
+-- Watched H1 programs for scope change detection
+CREATE TABLE IF NOT EXISTS h1_watched_programs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    handle          TEXT    NOT NULL UNIQUE,
+    name            TEXT,
+    project_id      INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+    last_checked_at TEXT,
+    last_changed_at TEXT,
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Scope snapshots for diffing
+CREATE TABLE IF NOT EXISTS h1_scope_snapshots (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    handle                  TEXT    NOT NULL,
+    asset_identifier        TEXT    NOT NULL,
+    asset_type              TEXT    NOT NULL,
+    eligible_for_bounty     INTEGER NOT NULL DEFAULT 0,
+    eligible_for_submission INTEGER NOT NULL DEFAULT 1,
+    max_severity            TEXT,
+    instruction             TEXT,
+    snapshot_at             TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(handle, asset_identifier, asset_type)
+);
+CREATE INDEX IF NOT EXISTS idx_h1_snapshots_handle ON h1_scope_snapshots(handle);
 """;
 
 
@@ -360,6 +389,33 @@ MIGRATIONS = [
             created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_scope_rules_project ON scope_rules(project_id);
+    """),
+    (2, "Add HackerOne watch tables and h1_handle column", """
+        ALTER TABLE projects ADD COLUMN h1_handle TEXT;
+
+        CREATE TABLE IF NOT EXISTS h1_watched_programs (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            handle          TEXT    NOT NULL UNIQUE,
+            name            TEXT,
+            project_id      INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+            last_checked_at TEXT,
+            last_changed_at TEXT,
+            created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS h1_scope_snapshots (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            handle                  TEXT    NOT NULL,
+            asset_identifier        TEXT    NOT NULL,
+            asset_type              TEXT    NOT NULL,
+            eligible_for_bounty     INTEGER NOT NULL DEFAULT 0,
+            eligible_for_submission INTEGER NOT NULL DEFAULT 1,
+            max_severity            TEXT,
+            instruction             TEXT,
+            snapshot_at             TEXT    NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(handle, asset_identifier, asset_type)
+        );
+        CREATE INDEX IF NOT EXISTS idx_h1_snapshots_handle ON h1_scope_snapshots(handle);
     """),
 ]
 

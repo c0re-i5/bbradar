@@ -2,6 +2,22 @@
 
 All notable changes to BBRadar will be documented in this file.
 
+## [0.3.0] — 2026-03-25
+
+### Added
+
+- **Scope change detection** — watch HackerOne programs and get alerted when
+  their scope changes:
+  - `bb h1 watch <handle>` — subscribe to a program's scope, takes initial snapshot
+  - `bb h1 unwatch <handle>` — stop watching
+  - `bb h1 watchlist` — show all watched programs with scope counts and timestamps
+  - `bb h1 check` — check all watched programs for new, removed, or changed assets
+  - `bb h1 check <handle>` — check a single program
+  - `bb h1 check --new-programs` — discover recently launched H1 programs you're not tracking
+  - `bb h1 check --auto-import` — automatically import new scope assets into linked projects
+- Auto-links watched programs to BBRadar projects imported from the same H1 handle
+- DB migration #2: `h1_watched_programs`, `h1_scope_snapshots` tables, `h1_handle` project column
+
 ## [0.2.0] — 2026-03-25
 
 ### Added

@@ -265,6 +265,12 @@ def import_program(handle: str, db_path=None) -> dict:
         db_path=db_path,
     )
 
+    # Link the H1 handle to the project
+    from ..core.database import get_connection
+    with get_connection(db_path) as conn:
+        conn.execute("UPDATE projects SET h1_handle = ? WHERE id = ?",
+                     (handle, pid))
+
     targets_added = 0
     rules_added = 0
 
@@ -572,3 +578,259 @@ def get_dashboard_data(db_path=None) -> dict:
         dashboard["hackerone"] = {"connected": False}
 
     return dashboard
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Scope Change Detection (Watch)
+# ═══════════════════════════════════════════════════════════════════
+
+def watch_program(handle: str, db_path=None) -> dict:
+    """
+    Add a program to the watchlist and take an initial scope snapshot.
+    Links to existing project if one was imported from this handle.
+    Returns {handle, name, scopes_snapshotted, project_id}.
+    """
+    from ..core.database import get_connection
+
+    program = get_program(handle)
+
+    with get_connection(db_path) as conn:
+        # Check for linked project
+        row = conn.execute(
+            "SELECT id FROM projects WHERE h1_handle = ?", (handle,)
+        ).fetchone()
+        project_id = row["id"] if row else None
+
+        # Insert or update watched program
+        conn.execute(
+            """INSERT INTO h1_watched_programs (handle, name, project_id, last_checked_at)
+               VALUES (?, ?, ?, datetime('now'))
+               ON CONFLICT(handle) DO UPDATE SET
+                   name = excluded.name,
+                   project_id = COALESCE(excluded.project_id, h1_watched_programs.project_id),
+                   last_checked_at = datetime('now')""",
+            (handle, program["name"], project_id),
+        )
+
+        # Take initial snapshot — replace any existing
+        conn.execute("DELETE FROM h1_scope_snapshots WHERE handle = ?", (handle,))
+        count = 0
+        for s in program.get("scopes", []):
+            conn.execute(
+                """INSERT INTO h1_scope_snapshots
+                   (handle, asset_identifier, asset_type, eligible_for_bounty,
+                    eligible_for_submission, max_severity, instruction)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (handle, s["asset_identifier"], s["asset_type"],
+                 1 if s.get("eligible_for_bounty") else 0,
+                 1 if s.get("eligible_for_submission", True) else 0,
+                 s.get("max_severity", ""),
+                 s.get("instruction", "")),
+            )
+            count += 1
+
+    log_action("watched_program", "hackerone", None,
+               {"handle": handle, "scopes": count}, db_path)
+
+    return {
+        "handle": handle,
+        "name": program["name"],
+        "scopes_snapshotted": count,
+        "project_id": project_id,
+    }
+
+
+def unwatch_program(handle: str, db_path=None):
+    """Remove a program from the watchlist and delete its snapshots."""
+    from ..core.database import get_connection
+    with get_connection(db_path) as conn:
+        conn.execute("DELETE FROM h1_watched_programs WHERE handle = ?", (handle,))
+        conn.execute("DELETE FROM h1_scope_snapshots WHERE handle = ?", (handle,))
+    log_action("unwatched_program", "hackerone", None, {"handle": handle}, db_path)
+
+
+def list_watched(db_path=None) -> list[dict]:
+    """List all watched programs."""
+    from ..core.database import get_connection
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            """SELECT w.handle, w.name, w.project_id, w.last_checked_at,
+                      w.last_changed_at, w.created_at,
+                      (SELECT COUNT(*) FROM h1_scope_snapshots s
+                       WHERE s.handle = w.handle) as scope_count
+               FROM h1_watched_programs w
+               ORDER BY w.handle"""
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def check_program(handle: str, auto_import: bool = False, db_path=None) -> dict:
+    """
+    Check a single watched program for scope changes.
+
+    Returns {
+        handle, name, new: [...], removed: [...], changed: [...],
+        has_changes: bool, auto_imported: int
+    }
+    """
+    from ..core.database import get_connection
+
+    program = get_program(handle)
+    current_scopes = {}
+    for s in program.get("scopes", []):
+        key = (s["asset_identifier"], s["asset_type"])
+        current_scopes[key] = {
+            "asset_identifier": s["asset_identifier"],
+            "asset_type": s["asset_type"],
+            "eligible_for_bounty": bool(s.get("eligible_for_bounty")),
+            "eligible_for_submission": bool(s.get("eligible_for_submission", True)),
+            "max_severity": s.get("max_severity", ""),
+            "instruction": s.get("instruction", ""),
+        }
+
+    # Load previous snapshot
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM h1_scope_snapshots WHERE handle = ?", (handle,)
+        ).fetchall()
+
+    previous = {}
+    for r in rows:
+        key = (r["asset_identifier"], r["asset_type"])
+        previous[key] = {
+            "asset_identifier": r["asset_identifier"],
+            "asset_type": r["asset_type"],
+            "eligible_for_bounty": bool(r["eligible_for_bounty"]),
+            "eligible_for_submission": bool(r["eligible_for_submission"]),
+            "max_severity": r["max_severity"] or "",
+            "instruction": r["instruction"] or "",
+        }
+
+    # Diff
+    new = []
+    removed = []
+    changed = []
+
+    for key, scope in current_scopes.items():
+        if key not in previous:
+            new.append(scope)
+        else:
+            old = previous[key]
+            diffs = {}
+            for field in ("eligible_for_bounty", "eligible_for_submission", "max_severity"):
+                if scope[field] != old[field]:
+                    diffs[field] = {"old": old[field], "new": scope[field]}
+            if diffs:
+                changed.append({**scope, "changes": diffs})
+
+    for key in previous:
+        if key not in current_scopes:
+            removed.append(previous[key])
+
+    has_changes = bool(new or removed or changed)
+
+    # Update snapshot
+    with get_connection(db_path) as conn:
+        conn.execute("DELETE FROM h1_scope_snapshots WHERE handle = ?", (handle,))
+        for key, scope in current_scopes.items():
+            conn.execute(
+                """INSERT INTO h1_scope_snapshots
+                   (handle, asset_identifier, asset_type, eligible_for_bounty,
+                    eligible_for_submission, max_severity, instruction)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (handle, scope["asset_identifier"], scope["asset_type"],
+                 1 if scope["eligible_for_bounty"] else 0,
+                 1 if scope["eligible_for_submission"] else 0,
+                 scope["max_severity"], scope["instruction"]),
+            )
+
+        # Update watch metadata
+        update_fields = "last_checked_at = datetime('now')"
+        if has_changes:
+            update_fields += ", last_changed_at = datetime('now')"
+        conn.execute(
+            f"UPDATE h1_watched_programs SET {update_fields} WHERE handle = ?",
+            (handle,),
+        )
+
+        # Get linked project for auto-import
+        row = conn.execute(
+            "SELECT project_id FROM h1_watched_programs WHERE handle = ?",
+            (handle,),
+        ).fetchone()
+        project_id = row["project_id"] if row else None
+
+    # Auto-import new scope into linked project
+    auto_imported = 0
+    if auto_import and project_id and new:
+        from .scope import add_rule
+        from .targets import add_target
+        for s in new:
+            asset_type = H1_ASSET_TYPE_MAP.get(s["asset_type"], "other")
+            in_scope = s["eligible_for_submission"]
+            try:
+                add_target(project_id, asset_type, s["asset_identifier"],
+                           in_scope=in_scope, db_path=db_path)
+                auto_imported += 1
+            except Exception:
+                pass
+            try:
+                add_rule(project_id, s["asset_identifier"],
+                         rule_type="include" if in_scope else "exclude",
+                         source="hackerone", db_path=db_path)
+            except Exception:
+                pass
+
+    if has_changes:
+        log_action("scope_change_detected", "hackerone", project_id,
+                   {"handle": handle, "new": len(new), "removed": len(removed),
+                    "changed": len(changed), "auto_imported": auto_imported},
+                   db_path)
+
+    return {
+        "handle": handle,
+        "name": program["name"],
+        "new": new,
+        "removed": removed,
+        "changed": changed,
+        "has_changes": has_changes,
+        "auto_imported": auto_imported,
+        "project_id": project_id,
+    }
+
+
+def check_all_watched(auto_import: bool = False, db_path=None) -> list[dict]:
+    """Check all watched programs for scope changes."""
+    watched = list_watched(db_path)
+    results = []
+    for w in watched:
+        result = check_program(w["handle"], auto_import=auto_import, db_path=db_path)
+        results.append(result)
+    return results
+
+
+def check_new_programs(db_path=None) -> list[dict]:
+    """
+    Find recently launched H1 programs that you're not already watching.
+    Returns programs sorted by launch date (newest first).
+    """
+    from ..core.database import get_connection
+
+    all_progs = list_programs(offers_bounties=True)
+
+    # Get handles we're already watching or have imported
+    with get_connection(db_path) as conn:
+        watched = {r["handle"] for r in conn.execute(
+            "SELECT handle FROM h1_watched_programs"
+        ).fetchall()}
+        imported = {r["h1_handle"] for r in conn.execute(
+            "SELECT h1_handle FROM projects WHERE h1_handle IS NOT NULL"
+        ).fetchall()}
+
+    known = watched | imported
+    new_progs = [p for p in all_progs if p["handle"] not in known]
+
+    # Sort by start date (newest first)
+    new_progs.sort(key=lambda p: p.get("started_accepting_at", ""), reverse=True)
+
+    return new_progs

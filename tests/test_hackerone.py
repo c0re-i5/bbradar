@@ -432,3 +432,191 @@ class TestCredentials:
             u, t = hackerone._get_credentials()
             assert u == "user"
             assert t == "tok"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Tests: Scope Watch
+# ═══════════════════════════════════════════════════════════════════
+
+class TestWatchProgram:
+    @patch("bbradar.modules.hackerone._api_request")
+    def test_watch_creates_entry_and_snapshot(self, mock_api, tmp_db):
+        mock_api.return_value = _mock_program_response()
+
+        result = hackerone.watch_program("testprog", db_path=tmp_db)
+
+        assert result["handle"] == "testprog"
+        assert result["name"] == "Test Program"
+        assert result["scopes_snapshotted"] == 3
+        assert result["project_id"] is None  # no project linked
+
+        # Verify watchlist
+        watched = hackerone.list_watched(db_path=tmp_db)
+        assert len(watched) == 1
+        assert watched[0]["handle"] == "testprog"
+        assert watched[0]["scope_count"] == 3
+
+    @patch("bbradar.modules.hackerone._api_request")
+    def test_watch_links_existing_project(self, mock_api, tmp_db):
+        """If a project was imported from this handle, it should auto-link."""
+        mock_api.return_value = _mock_program_response()
+        imp = hackerone.import_program("testprog", db_path=tmp_db)
+
+        result = hackerone.watch_program("testprog", db_path=tmp_db)
+        assert result["project_id"] == imp["project_id"]
+
+    @patch("bbradar.modules.hackerone._api_request")
+    def test_watch_idempotent(self, mock_api, tmp_db):
+        """Watching twice should update, not fail."""
+        mock_api.return_value = _mock_program_response()
+
+        hackerone.watch_program("testprog", db_path=tmp_db)
+        result = hackerone.watch_program("testprog", db_path=tmp_db)
+        assert result["scopes_snapshotted"] == 3
+        assert len(hackerone.list_watched(db_path=tmp_db)) == 1
+
+
+class TestUnwatchProgram:
+    @patch("bbradar.modules.hackerone._api_request")
+    def test_unwatch_removes_entry(self, mock_api, tmp_db):
+        mock_api.return_value = _mock_program_response()
+
+        hackerone.watch_program("testprog", db_path=tmp_db)
+        assert len(hackerone.list_watched(db_path=tmp_db)) == 1
+
+        hackerone.unwatch_program("testprog", db_path=tmp_db)
+        assert len(hackerone.list_watched(db_path=tmp_db)) == 0
+
+
+class TestCheckProgram:
+    @patch("bbradar.modules.hackerone._api_request")
+    def test_no_changes(self, mock_api, tmp_db):
+        """Same scope on check should show no changes."""
+        mock_api.return_value = _mock_program_response()
+        hackerone.watch_program("testprog", db_path=tmp_db)
+
+        result = hackerone.check_program("testprog", db_path=tmp_db)
+        assert result["has_changes"] is False
+        assert result["new"] == []
+        assert result["removed"] == []
+        assert result["changed"] == []
+
+    @patch("bbradar.modules.hackerone._api_request")
+    def test_new_asset_detected(self, mock_api, tmp_db):
+        """Adding a new asset should show up as 'new'."""
+        mock_api.return_value = _mock_program_response()
+        hackerone.watch_program("testprog", db_path=tmp_db)
+
+        # Now add a new scope asset
+        updated = _mock_program_response()
+        updated["data"]["relationships"]["structured_scopes"]["data"].append({
+            "attributes": {
+                "asset_identifier": "staging.example.com",
+                "asset_type": "DOMAIN",
+                "eligible_for_bounty": True,
+                "eligible_for_submission": True,
+                "instruction": "New staging",
+                "max_severity": "critical",
+            }
+        })
+        mock_api.return_value = updated
+
+        result = hackerone.check_program("testprog", db_path=tmp_db)
+        assert result["has_changes"] is True
+        assert len(result["new"]) == 1
+        assert result["new"][0]["asset_identifier"] == "staging.example.com"
+        assert result["removed"] == []
+
+    @patch("bbradar.modules.hackerone._api_request")
+    def test_removed_asset_detected(self, mock_api, tmp_db):
+        """Removing an asset should show up as 'removed'."""
+        mock_api.return_value = _mock_program_response()
+        hackerone.watch_program("testprog", db_path=tmp_db)
+
+        # Remove the last scope entry
+        shrunk = _mock_program_response()
+        shrunk["data"]["relationships"]["structured_scopes"]["data"] = \
+            shrunk["data"]["relationships"]["structured_scopes"]["data"][:2]
+        mock_api.return_value = shrunk
+
+        result = hackerone.check_program("testprog", db_path=tmp_db)
+        assert result["has_changes"] is True
+        assert len(result["removed"]) == 1
+        assert result["removed"][0]["asset_identifier"] == "admin.example.com"
+
+    @patch("bbradar.modules.hackerone._api_request")
+    def test_changed_asset_detected(self, mock_api, tmp_db):
+        """Changing bounty eligibility should show up as 'changed'."""
+        mock_api.return_value = _mock_program_response()
+        hackerone.watch_program("testprog", db_path=tmp_db)
+
+        # Change admin.example.com to become bounty-eligible
+        modified = _mock_program_response()
+        modified["data"]["relationships"]["structured_scopes"]["data"][2]["attributes"]["eligible_for_bounty"] = True
+        modified["data"]["relationships"]["structured_scopes"]["data"][2]["attributes"]["eligible_for_submission"] = True
+        mock_api.return_value = modified
+
+        result = hackerone.check_program("testprog", db_path=tmp_db)
+        assert result["has_changes"] is True
+        assert len(result["changed"]) == 1
+        assert result["changed"][0]["asset_identifier"] == "admin.example.com"
+        assert "eligible_for_bounty" in result["changed"][0]["changes"]
+
+    @patch("bbradar.modules.hackerone._api_request")
+    def test_auto_import_new_scope(self, mock_api, tmp_db):
+        """auto_import should add new assets to linked project."""
+        mock_api.return_value = _mock_program_response()
+        imp = hackerone.import_program("testprog", db_path=tmp_db)
+        hackerone.watch_program("testprog", db_path=tmp_db)
+
+        # Add a new scope to program
+        updated = _mock_program_response()
+        updated["data"]["relationships"]["structured_scopes"]["data"].append({
+            "attributes": {
+                "asset_identifier": "new.example.com",
+                "asset_type": "DOMAIN",
+                "eligible_for_bounty": True,
+                "eligible_for_submission": True,
+                "instruction": "",
+                "max_severity": "high",
+            }
+        })
+        mock_api.return_value = updated
+
+        result = hackerone.check_program("testprog", auto_import=True, db_path=tmp_db)
+        assert result["auto_imported"] >= 1
+
+        # Verify the target was added to the project
+        tgts = list_targets(imp["project_id"], db_path=tmp_db)
+        values = {t["value"] for t in tgts}
+        assert "new.example.com" in values
+
+
+class TestCheckAllWatched:
+    @patch("bbradar.modules.hackerone._api_request")
+    def test_check_all_returns_list(self, mock_api, tmp_db):
+        mock_api.return_value = _mock_program_response()
+        hackerone.watch_program("testprog", db_path=tmp_db)
+
+        results = hackerone.check_all_watched(db_path=tmp_db)
+        assert len(results) == 1
+        assert results[0]["handle"] == "testprog"
+
+
+class TestCheckNewPrograms:
+    @patch("bbradar.modules.hackerone._paginate")
+    def test_filters_known_programs(self, mock_paginate, tmp_db):
+        mock_paginate.return_value = _mock_programs_list_response()["data"]
+
+        # Watch one of the programs so it's "known"
+        from bbradar.core.database import get_connection
+        with get_connection(tmp_db) as conn:
+            conn.execute(
+                "INSERT INTO h1_watched_programs (handle, name) VALUES (?, ?)",
+                ("prog-a", "Program A"),
+            )
+
+        new = hackerone.check_new_programs(db_path=tmp_db)
+        handles = [p["handle"] for p in new]
+        assert "prog-a" not in handles
+        assert "prog-b" in handles

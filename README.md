@@ -229,6 +229,13 @@ bb h1 scope-sync <project_id> <handle>  # Sync scope updates
 bb h1 reports                       # List your submitted reports
 bb h1 balance                       # Current balance
 bb h1 earnings                      # Earnings summary
+bb h1 watch <handle>                # Watch a program for scope changes
+bb h1 unwatch <handle>              # Stop watching a program
+bb h1 watchlist                     # List all watched programs
+bb h1 check                         # Check all watched programs for changes
+bb h1 check <handle>                # Check a specific program
+bb h1 check --new-programs          # Find newly launched H1 programs
+bb h1 check --auto-import           # Auto-import new scope into linked projects
 bb dashboard                        # Combined local + H1 dashboard
 ```
 
