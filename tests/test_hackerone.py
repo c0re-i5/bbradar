@@ -181,6 +181,13 @@ def _mock_earnings_response():
     }
 
 
+def _mock_scope_data(response=None):
+    """Extract scope data list from a mock program response (as _paginate returns)."""
+    if response is None:
+        response = _mock_program_response()
+    return response["data"]["relationships"]["structured_scopes"]["data"]
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Tests: Asset type mapping
 # ═══════════════════════════════════════════════════════════════════
@@ -208,9 +215,11 @@ class TestAssetTypeMapping:
 # ═══════════════════════════════════════════════════════════════════
 
 class TestImportProgram:
+    @patch("bbradar.modules.hackerone._paginate")
     @patch("bbradar.modules.hackerone._api_request")
-    def test_import_creates_project_and_targets(self, mock_api, tmp_db):
+    def test_import_creates_project_and_targets(self, mock_api, mock_paginate, tmp_db):
         mock_api.return_value = _mock_program_response()
+        mock_paginate.return_value = _mock_scope_data()
 
         result = hackerone.import_program("testprog", db_path=tmp_db)
 
@@ -235,18 +244,22 @@ class TestImportProgram:
         admin_tgt = next(t for t in tgts if t["value"] == "admin.example.com")
         assert admin_tgt["in_scope"] == 0
 
+    @patch("bbradar.modules.hackerone._paginate")
     @patch("bbradar.modules.hackerone._api_request")
-    def test_import_duplicate_rejected(self, mock_api, tmp_db):
+    def test_import_duplicate_rejected(self, mock_api, mock_paginate, tmp_db):
         mock_api.return_value = _mock_program_response()
+        mock_paginate.return_value = _mock_scope_data()
 
         hackerone.import_program("testprog", db_path=tmp_db)
 
         with pytest.raises(ValueError, match="already exists"):
             hackerone.import_program("testprog", db_path=tmp_db)
 
+    @patch("bbradar.modules.hackerone._paginate")
     @patch("bbradar.modules.hackerone._api_request")
-    def test_import_scope_rules_created(self, mock_api, tmp_db):
+    def test_import_scope_rules_created(self, mock_api, mock_paginate, tmp_db):
         mock_api.return_value = _mock_program_response()
+        mock_paginate.return_value = _mock_scope_data()
 
         result = hackerone.import_program("testprog", db_path=tmp_db)
 
@@ -259,10 +272,13 @@ class TestImportProgram:
 # ═══════════════════════════════════════════════════════════════════
 
 class TestSyncScope:
+    @patch("bbradar.modules.hackerone._paginate")
     @patch("bbradar.modules.hackerone._api_request")
-    def test_sync_adds_new_targets(self, mock_api, tmp_db):
+    def test_sync_adds_new_targets(self, mock_api, mock_paginate, tmp_db):
         # First import
-        mock_api.return_value = _mock_program_response()
+        resp = _mock_program_response()
+        mock_api.return_value = resp
+        mock_paginate.return_value = _mock_scope_data(resp)
         result = hackerone.import_program("testprog", db_path=tmp_db)
         pid = result["project_id"]
 
@@ -279,15 +295,18 @@ class TestSyncScope:
             }
         })
         mock_api.return_value = updated
+        mock_paginate.return_value = _mock_scope_data(updated)
 
         sync_result = hackerone.sync_scope(pid, "testprog", db_path=tmp_db)
 
         assert sync_result["new_targets"] == 1
         assert sync_result["new_rules"] == 1
 
+    @patch("bbradar.modules.hackerone._paginate")
     @patch("bbradar.modules.hackerone._api_request")
-    def test_sync_no_duplicates(self, mock_api, tmp_db):
+    def test_sync_no_duplicates(self, mock_api, mock_paginate, tmp_db):
         mock_api.return_value = _mock_program_response()
+        mock_paginate.return_value = _mock_scope_data()
         result = hackerone.import_program("testprog", db_path=tmp_db)
         pid = result["project_id"]
 
@@ -532,9 +551,11 @@ class TestProgramCache:
 # ═══════════════════════════════════════════════════════════════════
 
 class TestWatchProgram:
+    @patch("bbradar.modules.hackerone._paginate")
     @patch("bbradar.modules.hackerone._api_request")
-    def test_watch_creates_entry_and_snapshot(self, mock_api, tmp_db):
+    def test_watch_creates_entry_and_snapshot(self, mock_api, mock_paginate, tmp_db):
         mock_api.return_value = _mock_program_response()
+        mock_paginate.return_value = _mock_scope_data()
 
         result = hackerone.watch_program("testprog", db_path=tmp_db)
 
@@ -549,19 +570,23 @@ class TestWatchProgram:
         assert watched[0]["handle"] == "testprog"
         assert watched[0]["scope_count"] == 3
 
+    @patch("bbradar.modules.hackerone._paginate")
     @patch("bbradar.modules.hackerone._api_request")
-    def test_watch_links_existing_project(self, mock_api, tmp_db):
+    def test_watch_links_existing_project(self, mock_api, mock_paginate, tmp_db):
         """If a project was imported from this handle, it should auto-link."""
         mock_api.return_value = _mock_program_response()
+        mock_paginate.return_value = _mock_scope_data()
         imp = hackerone.import_program("testprog", db_path=tmp_db)
 
         result = hackerone.watch_program("testprog", db_path=tmp_db)
         assert result["project_id"] == imp["project_id"]
 
+    @patch("bbradar.modules.hackerone._paginate")
     @patch("bbradar.modules.hackerone._api_request")
-    def test_watch_idempotent(self, mock_api, tmp_db):
+    def test_watch_idempotent(self, mock_api, mock_paginate, tmp_db):
         """Watching twice should update, not fail."""
         mock_api.return_value = _mock_program_response()
+        mock_paginate.return_value = _mock_scope_data()
 
         hackerone.watch_program("testprog", db_path=tmp_db)
         result = hackerone.watch_program("testprog", db_path=tmp_db)
@@ -570,9 +595,11 @@ class TestWatchProgram:
 
 
 class TestUnwatchProgram:
+    @patch("bbradar.modules.hackerone._paginate")
     @patch("bbradar.modules.hackerone._api_request")
-    def test_unwatch_removes_entry(self, mock_api, tmp_db):
+    def test_unwatch_removes_entry(self, mock_api, mock_paginate, tmp_db):
         mock_api.return_value = _mock_program_response()
+        mock_paginate.return_value = _mock_scope_data()
 
         hackerone.watch_program("testprog", db_path=tmp_db)
         assert len(hackerone.list_watched(db_path=tmp_db)) == 1
@@ -582,10 +609,12 @@ class TestUnwatchProgram:
 
 
 class TestCheckProgram:
+    @patch("bbradar.modules.hackerone._paginate")
     @patch("bbradar.modules.hackerone._api_request")
-    def test_no_changes(self, mock_api, tmp_db):
+    def test_no_changes(self, mock_api, mock_paginate, tmp_db):
         """Same scope on check should show no changes."""
         mock_api.return_value = _mock_program_response()
+        mock_paginate.return_value = _mock_scope_data()
         hackerone.watch_program("testprog", db_path=tmp_db)
 
         result = hackerone.check_program("testprog", db_path=tmp_db)
@@ -594,10 +623,12 @@ class TestCheckProgram:
         assert result["removed"] == []
         assert result["changed"] == []
 
+    @patch("bbradar.modules.hackerone._paginate")
     @patch("bbradar.modules.hackerone._api_request")
-    def test_new_asset_detected(self, mock_api, tmp_db):
+    def test_new_asset_detected(self, mock_api, mock_paginate, tmp_db):
         """Adding a new asset should show up as 'new'."""
         mock_api.return_value = _mock_program_response()
+        mock_paginate.return_value = _mock_scope_data()
         hackerone.watch_program("testprog", db_path=tmp_db)
 
         # Now add a new scope asset
@@ -613,6 +644,7 @@ class TestCheckProgram:
             }
         })
         mock_api.return_value = updated
+        mock_paginate.return_value = _mock_scope_data(updated)
 
         result = hackerone.check_program("testprog", db_path=tmp_db)
         assert result["has_changes"] is True
@@ -620,10 +652,12 @@ class TestCheckProgram:
         assert result["new"][0]["asset_identifier"] == "staging.example.com"
         assert result["removed"] == []
 
+    @patch("bbradar.modules.hackerone._paginate")
     @patch("bbradar.modules.hackerone._api_request")
-    def test_removed_asset_detected(self, mock_api, tmp_db):
+    def test_removed_asset_detected(self, mock_api, mock_paginate, tmp_db):
         """Removing an asset should show up as 'removed'."""
         mock_api.return_value = _mock_program_response()
+        mock_paginate.return_value = _mock_scope_data()
         hackerone.watch_program("testprog", db_path=tmp_db)
 
         # Remove the last scope entry
@@ -631,16 +665,19 @@ class TestCheckProgram:
         shrunk["data"]["relationships"]["structured_scopes"]["data"] = \
             shrunk["data"]["relationships"]["structured_scopes"]["data"][:2]
         mock_api.return_value = shrunk
+        mock_paginate.return_value = _mock_scope_data(shrunk)
 
         result = hackerone.check_program("testprog", db_path=tmp_db)
         assert result["has_changes"] is True
         assert len(result["removed"]) == 1
         assert result["removed"][0]["asset_identifier"] == "admin.example.com"
 
+    @patch("bbradar.modules.hackerone._paginate")
     @patch("bbradar.modules.hackerone._api_request")
-    def test_changed_asset_detected(self, mock_api, tmp_db):
+    def test_changed_asset_detected(self, mock_api, mock_paginate, tmp_db):
         """Changing bounty eligibility should show up as 'changed'."""
         mock_api.return_value = _mock_program_response()
+        mock_paginate.return_value = _mock_scope_data()
         hackerone.watch_program("testprog", db_path=tmp_db)
 
         # Change admin.example.com to become bounty-eligible
@@ -648,6 +685,7 @@ class TestCheckProgram:
         modified["data"]["relationships"]["structured_scopes"]["data"][2]["attributes"]["eligible_for_bounty"] = True
         modified["data"]["relationships"]["structured_scopes"]["data"][2]["attributes"]["eligible_for_submission"] = True
         mock_api.return_value = modified
+        mock_paginate.return_value = _mock_scope_data(modified)
 
         result = hackerone.check_program("testprog", db_path=tmp_db)
         assert result["has_changes"] is True
@@ -655,10 +693,12 @@ class TestCheckProgram:
         assert result["changed"][0]["asset_identifier"] == "admin.example.com"
         assert "eligible_for_bounty" in result["changed"][0]["changes"]
 
+    @patch("bbradar.modules.hackerone._paginate")
     @patch("bbradar.modules.hackerone._api_request")
-    def test_auto_import_new_scope(self, mock_api, tmp_db):
+    def test_auto_import_new_scope(self, mock_api, mock_paginate, tmp_db):
         """auto_import should add new assets to linked project."""
         mock_api.return_value = _mock_program_response()
+        mock_paginate.return_value = _mock_scope_data()
         imp = hackerone.import_program("testprog", db_path=tmp_db)
         hackerone.watch_program("testprog", db_path=tmp_db)
 
@@ -675,6 +715,7 @@ class TestCheckProgram:
             }
         })
         mock_api.return_value = updated
+        mock_paginate.return_value = _mock_scope_data(updated)
 
         result = hackerone.check_program("testprog", auto_import=True, db_path=tmp_db)
         assert result["auto_imported"] >= 1
@@ -686,9 +727,11 @@ class TestCheckProgram:
 
 
 class TestCheckAllWatched:
+    @patch("bbradar.modules.hackerone._paginate")
     @patch("bbradar.modules.hackerone._api_request")
-    def test_check_all_returns_list(self, mock_api, tmp_db):
+    def test_check_all_returns_list(self, mock_api, mock_paginate, tmp_db):
         mock_api.return_value = _mock_program_response()
+        mock_paginate.return_value = _mock_scope_data()
         hackerone.watch_program("testprog", db_path=tmp_db)
 
         results = hackerone.check_all_watched(db_path=tmp_db)

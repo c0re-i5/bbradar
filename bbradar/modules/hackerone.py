@@ -343,10 +343,10 @@ def get_program(handle: str) -> dict:
     result = _api_request(f"programs/{quote(handle, safe='')}")
     item = result.get("data", {})
     attrs = item.get("attributes", {})
-    relationships = item.get("relationships", {})
 
+    # Fetch scopes from dedicated endpoint (program response has empty scopes)
+    scope_data = _paginate(f"programs/{quote(handle, safe='')}/structured_scopes")
     scopes = []
-    scope_data = relationships.get("structured_scopes", {}).get("data", [])
     for s in scope_data:
         s_attrs = s.get("attributes", {})
         scopes.append({
