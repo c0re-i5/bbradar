@@ -241,27 +241,33 @@ bb h1 check                         # Check all watched programs for changes
 bb h1 check <handle>                # Check a specific program
 bb h1 check --new-programs          # Find newly launched H1 programs
 bb h1 check --auto-import           # Auto-import new scope into linked projects
-bb h1 notify discord <webhook_url>  # Configure Discord alerts
+bb h1 notify discord <webhook_url>  # Configure Discord alerts (default)
+bb h1 notify discord-scope <url>    # Scope changes → dedicated channel
+bb h1 notify discord-programs <url> # New programs → dedicated channel
 bb h1 notify desktop on             # Enable desktop notifications
 bb h1 notify test                   # Test all configured channels
 bb h1 notify status                 # Show notification channel status
-bb h1 monitor                       # Check all + send notifications (cron-friendly)
+bb h1 monitor                       # Check scope + new programs + notify
 bb h1 monitor --auto-import         # Monitor + auto-import new scope
-bb h1 monitor --new-programs        # Also alert on new H1 programs
 bb h1 monitor -q                    # Quiet mode — only output on changes
 bb dashboard                        # Combined local + H1 dashboard
 ```
 
 #### Notifications & Monitoring
 
-Set up Discord alerts so you never miss a scope change:
+Set up Discord alerts so you never miss a scope change or new program:
 
 ```bash
-# 1. Configure Discord (env var recommended, stays off git)
-export BBRADAR_DISCORD_WEBHOOK="https://discord.com/api/webhooks/..."
+# 1. Configure separate Discord channels (recommended)
+bb h1 notify discord-scope <scope_channel_webhook_url>
+bb h1 notify discord-programs <programs_channel_webhook_url>
 
-# 2. Or save to config
+# Or use a single channel for everything
 bb h1 notify discord <webhook_url>
+
+# 2. Env vars work too (stays off git)
+export BBRADAR_DISCORD_SCOPE_WEBHOOK="https://discord.com/api/webhooks/..."
+export BBRADAR_DISCORD_PROGRAMS_WEBHOOK="https://discord.com/api/webhooks/..."
 
 # 3. Enable desktop popups too (requires libnotify / notify-send)
 bb h1 notify desktop on
@@ -270,10 +276,10 @@ bb h1 notify desktop on
 bb h1 notify test
 
 # 5. Run manually or from cron
-bb h1 monitor --auto-import --new-programs
+bb h1 monitor --auto-import
 
-# Cron: check every 30 minutes
-# */30 * * * * cd ~/bbradar && .venv/bin/bb h1 monitor --auto-import -q
+# Cron: check every 15 minutes
+# */15 * * * * cd ~/bbradar && .venv/bin/bb h1 monitor --auto-import -q 2>/dev/null
 ```
 
 Credentials can be set via environment variables (recommended) or config file:

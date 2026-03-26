@@ -602,16 +602,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Scan for newly launched H1 programs")
 
     p_notify = sp_h1.add_parser("notify", help="Configure notification channels")
-    p_notify.add_argument("channel", nargs="?", choices=["discord", "desktop", "status", "test"],
+    p_notify.add_argument("channel", nargs="?",
+                          choices=["discord", "discord-scope", "discord-programs",
+                                   "desktop", "status", "test"],
                           default="status", help="Channel to configure")
     p_notify.add_argument("value", nargs="?", default=None,
                           help="Webhook URL or enable/disable")
 
-    p_mon = sp_h1.add_parser("monitor", help="Check all watched programs and send notifications")
+    p_mon = sp_h1.add_parser("monitor", help="Check watched programs for scope changes and scan for new programs")
     p_mon.add_argument("--auto-import", action="store_true", default=False,
                        help="Auto-import new scope into linked projects")
-    p_mon.add_argument("--new-programs", action="store_true", default=False,
-                       help="Also check for newly launched programs")
     p_mon.add_argument("--quiet", "-q", action="store_true", default=False,
                        help="Only output if there are changes (for cron)")
 
@@ -2310,22 +2310,33 @@ def cmd_h1(args):
         print(f"\n  Summary: {len(results)} programs checked, {total_changes} total changes.\n")
 
     elif args.subcmd == "notify":
-        if args.channel == "discord":
+        if args.channel in ("discord", "discord-scope", "discord-programs"):
+            event = None
+            if args.channel == "discord-scope":
+                event = "scope"
+            elif args.channel == "discord-programs":
+                event = "programs"
             if args.value:
-                notifier.configure_discord(args.value)
-                ok = notifier.test_discord()
+                notifier.configure_discord(args.value, event=event)
+                ok = notifier.test_discord(event=event)
+                label = f" ({event})" if event else ""
                 if ok:
-                    print("\n  ✓ Discord webhook saved and verified! Test message sent.\n")
+                    print(f"\n  ✓ Discord{label} webhook saved and verified! Test message sent.\n")
                 else:
-                    print("\n  ⚠ Webhook saved but test message failed. Check the URL.\n")
+                    print(f"\n  ⚠ Webhook saved but test message failed. Check the URL.\n")
             else:
                 status = notifier.get_status()
-                if status['discord']['configured']:
-                    print(f"\n  Discord: ✓ configured (via {status['discord']['source']})\n")
+                key = "discord" if not event else f"discord_{event}"
+                d = status[key]
+                label = f" ({event})" if event else ""
+                if d['configured']:
+                    extra = " (using default)" if d.get('uses_default') else ""
+                    print(f"\n  Discord{label}: ✓ configured (via {d['source']}){extra}\n")
                 else:
-                    print("\n  Discord: not configured.")
-                    print("  Set via env var: export BBRADAR_DISCORD_WEBHOOK=<url>")
-                    print("  Or via command:  bb h1 notify discord <webhook_url>\n")
+                    print(f"\n  Discord{label}: not configured.")
+                    env_var = f"BBRADAR_DISCORD_{event.upper()}_WEBHOOK" if event else "BBRADAR_DISCORD_WEBHOOK"
+                    print(f"  Set via env var: export {env_var}=<url>")
+                    print(f"  Or via command:  bb h1 notify {args.channel} <webhook_url>\n")
 
         elif args.channel == "desktop":
             if args.value in ("on", "enable", "true", "1", None):
@@ -2344,11 +2355,18 @@ def cmd_h1(args):
         elif args.channel == "test":
             print("\n  Testing notification channels...")
             status = notifier.get_status()
-            if status['discord']['configured']:
-                ok = notifier.test_discord()
-                print(f"    Discord: {'✓ sent' if ok else '✗ failed'}")
-            else:
-                print("    Discord: not configured")
+            for key, label in [("discord", "Discord (default)"),
+                               ("discord_scope", "Discord (scope)"),
+                               ("discord_programs", "Discord (programs)")]:
+                d = status[key]
+                if d['configured'] and not d.get('uses_default'):
+                    event = None if key == "discord" else key.split("_", 1)[1]
+                    ok = notifier.test_discord(event=event)
+                    print(f"    {label}: {'✓ sent' if ok else '✗ failed'}")
+                elif d['configured']:
+                    print(f"    {label}: using default")
+                else:
+                    print(f"    {label}: not configured")
             if status['desktop']['enabled']:
                 ok = notifier.test_desktop()
                 print(f"    Desktop: {'✓ sent' if ok else '✗ failed (is notify-send installed?)'}")
@@ -2360,10 +2378,26 @@ def cmd_h1(args):
             status = notifier.get_status()
             print("\n  Notification Channels:\n")
             d = status['discord']
-            print(f"    Discord:  {'✓ configured' if d['configured'] else '✗ not configured'}" +
+            print(f"    Discord (default):  {'✓ configured' if d['configured'] else '✗ not configured'}" +
                   (f" (via {d['source']})" if d['configured'] else ""))
-            print(f"    Desktop:  {'✓ enabled' if status['desktop']['enabled'] else '✗ disabled'}")
-            print(f"\n  Configure: bb h1 notify discord <url>")
+            ds = status['discord_scope']
+            if ds['configured'] and not ds.get('uses_default'):
+                print(f"    Discord (scope):    ✓ configured (via {ds['source']})")
+            elif ds['configured']:
+                print(f"    Discord (scope):    → using default")
+            else:
+                print(f"    Discord (scope):    ✗ not configured")
+            dp = status['discord_programs']
+            if dp['configured'] and not dp.get('uses_default'):
+                print(f"    Discord (programs): ✓ configured (via {dp['source']})")
+            elif dp['configured']:
+                print(f"    Discord (programs): → using default")
+            else:
+                print(f"    Discord (programs): ✗ not configured")
+            print(f"    Desktop:            {'✓ enabled' if status['desktop']['enabled'] else '✗ disabled'}")
+            print(f"\n  Configure: bb h1 notify discord <url>           # default for all")
+            print(f"             bb h1 notify discord-scope <url>     # scope changes")
+            print(f"             bb h1 notify discord-programs <url>  # new programs")
             print(f"             bb h1 notify desktop on")
             print(f"  Test:      bb h1 notify test\n")
 
@@ -2374,10 +2408,8 @@ def cmd_h1(args):
         results = hackerone.check_all_watched(auto_import=args.auto_import)
         changed = [r for r in results if r.get('has_changes')]
 
-        # Check new programs if requested
-        new_progs = []
-        if args.new_programs:
-            new_progs = hackerone.check_new_programs()
+        # Check for newly launched programs
+        new_progs = hackerone.check_new_programs()
 
         # Print results (unless --quiet and nothing changed)
         if not quiet or changed or new_progs:

@@ -23,8 +23,22 @@ from ..core.audit import log_action
 # Credential / Config helpers
 # ═══════════════════════════════════════════════════════════════════
 
-def _get_discord_webhook() -> str | None:
-    """Get Discord webhook URL from env var or config."""
+def _get_discord_webhook(event: str | None = None) -> str | None:
+    """Get Discord webhook URL from env var or config.
+
+    If *event* is given ("scope" or "programs"), checks for an
+    event-specific webhook first, then falls back to the default.
+    """
+    if event:
+        env_key = f"BBRADAR_DISCORD_{event.upper()}_WEBHOOK"
+        url = os.environ.get(env_key)
+        if url:
+            return url
+        cfg = load_config()
+        url = cfg.get("notifications", {}).get(f"discord_{event}_webhook")
+        if url:
+            return url
+    # Fall back to default webhook
     url = os.environ.get("BBRADAR_DISCORD_WEBHOOK")
     if url:
         return url
@@ -41,9 +55,16 @@ def _get_notify_config() -> dict:
     })
 
 
-def configure_discord(webhook_url: str):
-    """Save Discord webhook URL to config."""
-    set_config_value("notifications.discord_webhook", webhook_url)
+def configure_discord(webhook_url: str, event: str | None = None):
+    """Save Discord webhook URL to config.
+
+    *event* can be "scope" or "programs" for a channel-specific webhook,
+    or None to set the default webhook.
+    """
+    if event:
+        set_config_value(f"notifications.discord_{event}_webhook", webhook_url)
+    else:
+        set_config_value("notifications.discord_webhook", webhook_url)
 
 
 def configure_desktop(enabled: bool = True):
@@ -55,10 +76,24 @@ def get_status() -> dict:
     """Return status of all notification channels."""
     cfg = _get_notify_config()
     discord_url = _get_discord_webhook()
+    scope_url = _get_discord_webhook("scope")
+    programs_url = _get_discord_webhook("programs")
     return {
         "discord": {
             "configured": bool(discord_url),
             "source": "env" if os.environ.get("BBRADAR_DISCORD_WEBHOOK") else "config",
+        },
+        "discord_scope": {
+            "configured": bool(scope_url),
+            "source": "env" if os.environ.get("BBRADAR_DISCORD_SCOPE_WEBHOOK") else "config",
+            "uses_default": scope_url == discord_url and not os.environ.get("BBRADAR_DISCORD_SCOPE_WEBHOOK")
+                            and not cfg.get("discord_scope_webhook"),
+        },
+        "discord_programs": {
+            "configured": bool(programs_url),
+            "source": "env" if os.environ.get("BBRADAR_DISCORD_PROGRAMS_WEBHOOK") else "config",
+            "uses_default": programs_url == discord_url and not os.environ.get("BBRADAR_DISCORD_PROGRAMS_WEBHOOK")
+                            and not cfg.get("discord_programs_webhook"),
         },
         "desktop": {
             "enabled": cfg.get("desktop", False),
@@ -70,9 +105,14 @@ def get_status() -> dict:
 # Discord
 # ═══════════════════════════════════════════════════════════════════
 
-def _send_discord(content: str, embeds: list[dict] | None = None) -> bool:
-    """Send a message to the configured Discord webhook. Returns True on success."""
-    webhook_url = _get_discord_webhook()
+def _send_discord(content: str, embeds: list[dict] | None = None,
+                  webhook_url: str | None = None) -> bool:
+    """Send a message to a Discord webhook. Returns True on success.
+
+    If *webhook_url* is not given, uses the default webhook.
+    """
+    if not webhook_url:
+        webhook_url = _get_discord_webhook()
     if not webhook_url:
         return False
 
@@ -211,10 +251,11 @@ def notify_scope_changes(results: list[dict], db_path=None) -> dict:
     discord_ok = False
     desktop_ok = False
 
-    # Discord
-    if status["discord"]["configured"]:
+    # Discord — use scope-specific webhook
+    if status["discord_scope"]["configured"]:
         embeds = [_build_scope_change_embed(r) for r in changed[:10]]
-        discord_ok = _send_discord("", embeds=embeds)
+        discord_ok = _send_discord("", embeds=embeds,
+                                   webhook_url=_get_discord_webhook("scope"))
 
     # Desktop
     if status["desktop"]["enabled"]:
@@ -251,10 +292,11 @@ def notify_new_programs(programs: list[dict], db_path=None) -> dict:
     discord_ok = False
     desktop_ok = False
 
-    # Discord
-    if status["discord"]["configured"]:
+    # Discord — use programs-specific webhook
+    if status["discord_programs"]["configured"]:
         embed = _build_new_programs_embed(programs)
-        discord_ok = _send_discord("", embeds=[embed])
+        discord_ok = _send_discord("", embeds=[embed],
+                                   webhook_url=_get_discord_webhook("programs"))
 
     # Desktop
     if status["desktop"]["enabled"]:
@@ -278,9 +320,15 @@ def notify_new_programs(programs: list[dict], db_path=None) -> dict:
     }
 
 
-def test_discord() -> bool:
-    """Send a test message to verify Discord webhook is working."""
-    return _send_discord("✅ **BBRadar connected!** Scope change alerts will appear here.")
+def test_discord(event: str | None = None) -> bool:
+    """Send a test message to verify Discord webhook is working.
+
+    *event* can be "scope" or "programs" to test that specific channel.
+    """
+    url = _get_discord_webhook(event)
+    label = f" ({event})" if event else ""
+    return _send_discord(f"✅ **BBRadar connected!**{label} Alerts will appear here.",
+                         webhook_url=url)
 
 
 def test_desktop() -> bool:

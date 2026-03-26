@@ -15,14 +15,18 @@ All notable changes to BBRadar will be documented in this file.
   - `bb h1 check <handle>` — check a single program
   - `bb h1 check --new-programs` — discover recently launched H1 programs you're not tracking
   - `bb h1 check --auto-import` — automatically import new scope assets into linked projects
-- **Notifications** — get alerts via Discord or desktop when scope changes:
-  - `bb h1 notify discord <url>` — configure Discord webhook
+- **Notifications** — get alerts via Discord or desktop when scope changes or
+  new programs appear:
+  - `bb h1 notify discord <url>` — configure default Discord webhook
+  - `bb h1 notify discord-scope <url>` — scope changes to a dedicated channel
+  - `bb h1 notify discord-programs <url>` — new programs to a dedicated channel
   - `bb h1 notify desktop on/off` — toggle desktop notifications (notify-send)
   - `bb h1 notify test` — test all configured channels
   - `bb h1 notify status` — show channel configuration
-  - `bb h1 monitor` — check all watched programs and send notifications (cron-friendly)
-  - `bb h1 monitor --auto-import --new-programs -q` — full automation mode
-  - Credentials via env var `BBRADAR_DISCORD_WEBHOOK` (recommended) or config
+  - `bb h1 monitor` — check watched programs + scan for new programs + notify
+  - `bb h1 monitor --auto-import -q` — full automation mode for cron
+  - Per-channel env vars: `BBRADAR_DISCORD_SCOPE_WEBHOOK`,
+    `BBRADAR_DISCORD_PROGRAMS_WEBHOOK`, `BBRADAR_DISCORD_WEBHOOK` (fallback)
 - Auto-links watched programs to BBRadar projects imported from the same H1 handle
 - **Local program cache with filters** — instant, offline-capable program browsing:
   - `bb h1 programs --bounties` — show only bounty-paying programs

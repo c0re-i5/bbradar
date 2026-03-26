@@ -91,6 +91,22 @@ class TestConfiguration:
         )
 
     @patch("bbradar.modules.notifier.set_config_value")
+    def test_configure_discord_scope(self, mock_set):
+        notifier.configure_discord("https://discord.com/api/webhooks/scope/url", event="scope")
+        mock_set.assert_called_once_with(
+            "notifications.discord_scope_webhook",
+            "https://discord.com/api/webhooks/scope/url",
+        )
+
+    @patch("bbradar.modules.notifier.set_config_value")
+    def test_configure_discord_programs(self, mock_set):
+        notifier.configure_discord("https://discord.com/api/webhooks/progs/url", event="programs")
+        mock_set.assert_called_once_with(
+            "notifications.discord_programs_webhook",
+            "https://discord.com/api/webhooks/progs/url",
+        )
+
+    @patch("bbradar.modules.notifier.set_config_value")
     def test_configure_desktop(self, mock_set):
         notifier.configure_desktop(True)
         mock_set.assert_called_once_with("notifications.desktop", True)
@@ -104,6 +120,10 @@ class TestGetStatus:
         status = notifier.get_status()
         assert status["discord"]["configured"] is True
         assert status["discord"]["source"] == "env"
+        assert status["discord_scope"]["configured"] is True
+        assert status["discord_scope"]["uses_default"] is True
+        assert status["discord_programs"]["configured"] is True
+        assert status["discord_programs"]["uses_default"] is True
         assert status["desktop"]["enabled"] is True
 
 
@@ -204,6 +224,8 @@ class TestNotifyDispatch:
     @patch("bbradar.modules.notifier._send_discord", return_value=True)
     @patch("bbradar.modules.notifier.get_status", return_value={
         "discord": {"configured": True, "source": "env"},
+        "discord_scope": {"configured": True, "source": "env", "uses_default": True},
+        "discord_programs": {"configured": True, "source": "env", "uses_default": True},
         "desktop": {"enabled": True},
     })
     def test_scope_changes_notified(self, _, mock_discord, mock_desktop, mock_log):
@@ -220,6 +242,8 @@ class TestNotifyDispatch:
     @patch("bbradar.modules.notifier._send_discord", return_value=False)
     @patch("bbradar.modules.notifier.get_status", return_value={
         "discord": {"configured": False, "source": "config"},
+        "discord_scope": {"configured": False, "source": "config", "uses_default": False},
+        "discord_programs": {"configured": False, "source": "config", "uses_default": False},
         "desktop": {"enabled": False},
     })
     def test_no_channels_configured(self, _, mock_discord, mock_log):
@@ -237,6 +261,8 @@ class TestNotifyDispatch:
     @patch("bbradar.modules.notifier._send_discord", return_value=True)
     @patch("bbradar.modules.notifier.get_status", return_value={
         "discord": {"configured": True, "source": "env"},
+        "discord_scope": {"configured": True, "source": "env", "uses_default": True},
+        "discord_programs": {"configured": True, "source": "env", "uses_default": True},
         "desktop": {"enabled": False},
     })
     def test_new_programs_notified(self, _, mock_discord, mock_log):
