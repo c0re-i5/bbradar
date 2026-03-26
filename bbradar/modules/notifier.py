@@ -254,7 +254,13 @@ def notify_scope_changes(results: list[dict], db_path=None) -> dict:
     # Discord — use scope-specific webhook
     if status["discord_scope"]["configured"]:
         embeds = [_build_scope_change_embed(r) for r in changed[:10]]
-        discord_ok = _send_discord("", embeds=embeds,
+        total_new = sum(len(r.get("new", [])) for r in changed)
+        total_removed = sum(len(r.get("removed", [])) for r in changed)
+        total_changed_assets = sum(len(r.get("changed", [])) for r in changed)
+        handles = ", ".join(r["handle"] for r in changed[:5])
+        content = (f"🔔 **Scope changes** in {len(changed)} program(s): {handles}\n"
+                   f"+{total_new} new, -{total_removed} removed, ~{total_changed_assets} changed")
+        discord_ok = _send_discord(content, embeds=embeds,
                                    webhook_url=_get_discord_webhook("scope"))
 
     # Desktop
@@ -295,7 +301,10 @@ def notify_new_programs(programs: list[dict], db_path=None) -> dict:
     # Discord — use programs-specific webhook
     if status["discord_programs"]["configured"]:
         embed = _build_new_programs_embed(programs)
-        discord_ok = _send_discord("", embeds=[embed],
+        handles = ", ".join(p["handle"] for p in programs[:10])
+        more = f" (+{len(programs) - 10} more)" if len(programs) > 10 else ""
+        content = f"🆕 **{len(programs)} new programs detected:** {handles}{more}"
+        discord_ok = _send_discord(content, embeds=[embed],
                                    webhook_url=_get_discord_webhook("programs"))
 
     # Desktop
@@ -382,7 +391,9 @@ def notify_new_hacktivity(disclosures: list[dict], db_path=None) -> dict:
     # Discord — use scope webhook (hacktivity is program-specific intel)
     if status["discord_scope"]["configured"]:
         embeds = [_build_hacktivity_embed(d) for d in disclosures[:10]]
-        discord_ok = _send_discord("", embeds=embeds,
+        handles = ", ".join(d["handle"] for d in disclosures[:5])
+        content = f"📄 **{total_reports} new disclosed report(s)** in: {handles}"
+        discord_ok = _send_discord(content, embeds=embeds,
                                    webhook_url=_get_discord_webhook("scope"))
 
     # Desktop
