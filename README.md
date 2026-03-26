@@ -241,13 +241,16 @@ bb h1 check                         # Check all watched programs for changes
 bb h1 check <handle>                # Check a specific program
 bb h1 check --new-programs          # Find newly launched H1 programs
 bb h1 check --auto-import           # Auto-import new scope into linked projects
+bb h1 intel <handle>                # Program intel: disclosures, bounties, CWEs
+bb h1 intel <handle> --refresh      # Force re-fetch (12h cache)
+bb h1 weaknesses <handle>           # List accepted weakness/CWE types
 bb h1 notify discord <webhook_url>  # Configure Discord alerts (default)
 bb h1 notify discord-scope <url>    # Scope changes → dedicated channel
 bb h1 notify discord-programs <url> # New programs → dedicated channel
 bb h1 notify desktop on             # Enable desktop notifications
 bb h1 notify test                   # Test all configured channels
 bb h1 notify status                 # Show notification channel status
-bb h1 monitor                       # Check scope + new programs + notify
+bb h1 monitor                       # Check scope + new programs + hacktivity + notify
 bb h1 monitor --auto-import         # Monitor + auto-import new scope
 bb h1 monitor -q                    # Quiet mode — only output on changes
 bb dashboard                        # Combined local + H1 dashboard

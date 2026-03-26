@@ -615,6 +615,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_mon.add_argument("--quiet", "-q", action="store_true", default=False,
                        help="Only output if there are changes (for cron)")
 
+    p = sp_h1.add_parser("intel", help="Program intelligence — hacktivity, bounties, top vulns")
+    p.add_argument("handle", help="HackerOne program handle")
+    p.add_argument("--refresh", action="store_true", default=False,
+                   help="Force refresh from API (ignores cache)")
+
+    p = sp_h1.add_parser("weaknesses", help="List accepted weakness types for a program")
+    p.add_argument("handle", help="HackerOne program handle")
+    p.add_argument("--refresh", action="store_true", default=False,
+                   help="Force refresh from API")
+
     # --- dashboard ---
     sub.add_parser("dashboard", help="Show combined BBRadar + HackerOne dashboard")
 
@@ -2443,6 +2453,18 @@ def cmd_h1(args):
         if new_progs:
             notifier.notify_new_programs(new_progs)
 
+        # Check for new hacktivity disclosures on watched programs
+        new_disclosures = hackerone.check_new_hacktivity()
+        if new_disclosures:
+            if not quiet:
+                for d in new_disclosures:
+                    print(f"\n  📄 [{d['handle']}] {len(d['new_reports'])} new disclosed reports:")
+                    for r in d['new_reports'][:5]:
+                        sev = r.get('severity_rating', '-')
+                        bounty = f" ${r['total_awarded_amount']}" if r.get('total_awarded_amount') else ""
+                        print(f"    {sev:8s} {r['title'][:60]}{bounty}")
+            notifier.notify_new_hacktivity(new_disclosures)
+
         if not quiet:
             sent_to = []
             if notif_result.get('discord'):
@@ -2455,8 +2477,104 @@ def cmd_h1(args):
                 print(f"\n  ⚠ Changes detected but no notification channels configured.")
                 print(f"    Run: bb h1 notify discord <webhook_url>")
 
+    elif args.subcmd == "intel":
+        if not getattr(args, "json", False):
+            print(f"\n  Fetching intel for '{args.handle}'...")
+        intel = hackerone.get_program_intel(args.handle, refresh=args.refresh)
+        if _json_out(args, intel):
+            return
+        stats = intel["stats"]
+
+        bounty_str = "💰 Yes" if intel["offers_bounties"] else "No"
+        print(f"\n═══ Program Intel: {intel['handle']} ═══\n")
+        print(f"  Program:   {intel['name']}")
+        print(f"  Bounties:  {bounty_str}")
+        print(f"  Disclosed: {stats['total_disclosed']} reports")
+
+        # Severity breakdown
+        if stats["by_severity"]:
+            print(f"\n  Severity Breakdown:")
+            for sev in ("critical", "high", "medium", "low", "none"):
+                count = stats["by_severity"].get(sev, 0)
+                if count:
+                    bar = "█" * min(count, 40)
+                    print(f"    {sev:10s} {count:3d}  {bar}")
+
+        # Bounty stats
+        if stats["bounty_count"]:
+            print(f"\n  Bounty Stats ({stats['bounty_count']} paid):")
+            print(f"    Min:   ${stats['bounty_min']:,.0f}")
+            print(f"    Max:   ${stats['bounty_max']:,.0f}")
+            print(f"    Avg:   ${stats['bounty_avg']:,.0f}")
+            print(f"    Total: ${stats['bounty_total']:,.0f}")
+
+        # Top CWEs
+        if stats["top_cwes"]:
+            print(f"\n  Top Vulnerability Types:")
+            for cwe, count in stats["top_cwes"]:
+                print(f"    {count:3d}  {cwe}")
+
+        # Top reporters
+        if stats["top_reporters"]:
+            print(f"\n  Top Reporters:")
+            for reporter, count in stats["top_reporters"]:
+                print(f"    {count:3d}  {reporter}")
+
+        # Recent disclosures
+        recent = intel["hacktivity"][:10]
+        if recent:
+            print(f"\n  Recent Disclosed Reports:")
+            rows = []
+            for r in recent:
+                bounty = f"${r['total_awarded_amount']:,.0f}" if r.get('total_awarded_amount') else "-"
+                date = (r.get("disclosed_at") or "")[:10]
+                rows.append({
+                    "severity": r.get("severity_rating", "-"),
+                    "title": r["title"][:50],
+                    "bounty": bounty,
+                    "date": date,
+                })
+            print(format_table(rows, ["severity", "title", "bounty", "date"]))
+
+        # Weaknesses
+        if intel["weaknesses"]:
+            print(f"\n  Accepted Weakness Types ({len(intel['weaknesses'])}):")
+            for w in intel["weaknesses"][:15]:
+                cwe = f" ({w['external_id']})" if w.get("external_id") else ""
+                print(f"    • {w['name']}{cwe}")
+            if len(intel["weaknesses"]) > 15:
+                print(f"    ...and {len(intel['weaknesses']) - 15} more")
+
+        print(f"\n  Use 'bb h1 weaknesses {args.handle}' for full weakness list.\n")
+
+    elif args.subcmd == "weaknesses":
+        print(f"\n  Fetching weaknesses for '{args.handle}'...")
+
+        if args.refresh or not hackerone._intel_cache_fresh(args.handle, "h1_weakness_cache"):
+            weaknesses = hackerone.get_weaknesses(args.handle)
+            hackerone.cache_weaknesses(args.handle, weaknesses)
+        else:
+            weaknesses = hackerone.get_cached_weaknesses(args.handle)
+
+        if _json_out(args, weaknesses):
+            return
+
+        if not weaknesses:
+            print(f"\n  No weakness types found for '{args.handle}'.\n")
+            return
+
+        print(f"\n═══ Accepted Weaknesses: {args.handle} ({len(weaknesses)}) ═══\n")
+        rows = []
+        for w in weaknesses:
+            rows.append({
+                "cwe": w.get("external_id", ""),
+                "name": w["name"][:60],
+            })
+        print(format_table(rows, ["cwe", "name"]))
+        print()
+
     else:
-        print("Usage: bb h1 {auth|status|programs|search|import|scope-sync|reports|report|balance|earnings|watch|unwatch|watchlist|check|notify|monitor}")
+        print("Usage: bb h1 {auth|status|programs|search|import|scope-sync|reports|report|balance|earnings|watch|unwatch|watchlist|check|notify|monitor|intel|weaknesses}")
 
 
 def cmd_dashboard(args):

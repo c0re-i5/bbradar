@@ -2,6 +2,25 @@
 
 All notable changes to BBRadar will be documented in this file.
 
+## [0.4.0] — 2026-03-26
+
+### Added
+
+- **Program intel** — gather disclosed reports, vulnerability types, and bounty
+  statistics for any HackerOne program:
+  - `bb h1 intel <handle>` — full program intel: severity breakdown, bounty
+    stats (min/max/avg/total), top CWEs, top reporters, recent disclosures,
+    and accepted weakness types
+  - `bb h1 intel <handle> --refresh` — force re-fetch from API (12h cache)
+  - `bb h1 weaknesses <handle>` — list all accepted weakness/CWE types
+  - `bb h1 monitor` now also checks for newly disclosed hacktivity on watched
+    programs and sends Discord alerts for new disclosures
+  - DB migration #4: `h1_hacktivity_cache` and `h1_weakness_cache` tables
+
+### Fixed
+
+- Fixed `test_all_configured` notifier test leaking real config via `load_config()`
+
 ## [0.3.1] — 2026-03-25
 
 ### Added

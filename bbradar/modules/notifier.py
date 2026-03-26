@@ -334,3 +334,74 @@ def test_discord(event: str | None = None) -> bool:
 def test_desktop() -> bool:
     """Send a test desktop notification."""
     return _send_desktop("BBRadar", "Desktop notifications are working!")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Hacktivity notifications
+# ═══════════════════════════════════════════════════════════════════
+
+def _build_hacktivity_embed(result: dict) -> dict:
+    """Build a Discord embed for newly disclosed hacktivity."""
+    lines = []
+    for r in result["new_reports"][:10]:
+        sev = r.get("severity_rating", "?")
+        bounty = f" — ${r['total_awarded_amount']:,.0f}" if r.get("total_awarded_amount") else ""
+        cwe = f" [{r['cwe']}]" if r.get("cwe") else ""
+        url = r.get("url", "")
+        title_text = r["title"][:60]
+        if url:
+            title_text = f"[{title_text}]({url})"
+        lines.append(f"**{sev}** {title_text}{cwe}{bounty}")
+    if len(result["new_reports"]) > 10:
+        lines.append(f"_...and {len(result['new_reports']) - 10} more_")
+
+    h1_url = f"https://hackerone.com/{result['handle']}"
+
+    return {
+        "title": f"📄 New Disclosures: {result['handle']}",
+        "description": f"[{result['name']}]({h1_url})\n\n" + "\n".join(lines),
+        "color": 0x7B68EE,  # medium slate blue
+    }
+
+
+def notify_new_hacktivity(disclosures: list[dict], db_path=None) -> dict:
+    """
+    Send notifications for newly disclosed hacktivity items.
+
+    Returns {discord: bool, desktop: bool, count: int}
+    """
+    if not disclosures:
+        return {"discord": False, "desktop": False, "count": 0}
+
+    status = get_status()
+    discord_ok = False
+    desktop_ok = False
+
+    total_reports = sum(len(d["new_reports"]) for d in disclosures)
+
+    # Discord — use scope webhook (hacktivity is program-specific intel)
+    if status["discord_scope"]["configured"]:
+        embeds = [_build_hacktivity_embed(d) for d in disclosures[:10]]
+        discord_ok = _send_discord("", embeds=embeds,
+                                   webhook_url=_get_discord_webhook("scope"))
+
+    # Desktop
+    if status["desktop"]["enabled"]:
+        handles = ", ".join(d["handle"] for d in disclosures[:5])
+        desktop_ok = _send_desktop(
+            f"BBRadar: {total_reports} New Disclosures",
+            f"New disclosed reports in: {handles}",
+        )
+
+    log_action("hacktivity_notified", "notifier", None, {
+        "programs": len(disclosures),
+        "reports": total_reports,
+        "discord": discord_ok,
+        "desktop": desktop_ok,
+    }, db_path)
+
+    return {
+        "discord": discord_ok,
+        "desktop": desktop_ok,
+        "count": total_reports,
+    }

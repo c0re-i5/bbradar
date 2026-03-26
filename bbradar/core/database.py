@@ -413,6 +413,42 @@ CREATE TABLE IF NOT EXISTS h1_program_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_h1_cache_bounties ON h1_program_cache(offers_bounties);
 CREATE INDEX IF NOT EXISTS idx_h1_cache_state ON h1_program_cache(state);
+
+-- ═══ HackerOne Intel Cache ═══
+
+-- Cached hacktivity (disclosed reports) for program intel
+CREATE TABLE IF NOT EXISTS h1_hacktivity_cache (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    h1_report_id          TEXT    NOT NULL,
+    handle                TEXT    NOT NULL,
+    title                 TEXT    NOT NULL DEFAULT '',
+    severity_rating       TEXT    NOT NULL DEFAULT '',
+    cwe                   TEXT,
+    cve_ids               TEXT,
+    total_awarded_amount  REAL,
+    substate              TEXT,
+    url                   TEXT,
+    reporter_username     TEXT,
+    disclosed_at          TEXT,
+    submitted_at          TEXT,
+    cached_at             TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(h1_report_id)
+);
+CREATE INDEX IF NOT EXISTS idx_h1_hacktivity_handle ON h1_hacktivity_cache(handle);
+CREATE INDEX IF NOT EXISTS idx_h1_hacktivity_severity ON h1_hacktivity_cache(severity_rating);
+
+-- Cached program weaknesses (accepted vuln types)
+CREATE TABLE IF NOT EXISTS h1_weakness_cache (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    handle                TEXT    NOT NULL,
+    weakness_id           TEXT    NOT NULL,
+    name                  TEXT    NOT NULL DEFAULT '',
+    description           TEXT,
+    external_id           TEXT,
+    cached_at             TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(handle, weakness_id)
+);
+CREATE INDEX IF NOT EXISTS idx_h1_weakness_handle ON h1_weakness_cache(handle);
 """;
 
 
@@ -480,6 +516,39 @@ MIGRATIONS = [
         );
         CREATE INDEX IF NOT EXISTS idx_h1_cache_bounties ON h1_program_cache(offers_bounties);
         CREATE INDEX IF NOT EXISTS idx_h1_cache_state ON h1_program_cache(state);
+    """),
+    (4, "Add H1 intel cache tables (hacktivity + weaknesses)", """
+        CREATE TABLE IF NOT EXISTS h1_hacktivity_cache (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            h1_report_id          TEXT    NOT NULL,
+            handle                TEXT    NOT NULL,
+            title                 TEXT    NOT NULL DEFAULT '',
+            severity_rating       TEXT    NOT NULL DEFAULT '',
+            cwe                   TEXT,
+            cve_ids               TEXT,
+            total_awarded_amount  REAL,
+            substate              TEXT,
+            url                   TEXT,
+            reporter_username     TEXT,
+            disclosed_at          TEXT,
+            submitted_at          TEXT,
+            cached_at             TEXT    NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(h1_report_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_h1_hacktivity_handle ON h1_hacktivity_cache(handle);
+        CREATE INDEX IF NOT EXISTS idx_h1_hacktivity_severity ON h1_hacktivity_cache(severity_rating);
+
+        CREATE TABLE IF NOT EXISTS h1_weakness_cache (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            handle                TEXT    NOT NULL,
+            weakness_id           TEXT    NOT NULL,
+            name                  TEXT    NOT NULL DEFAULT '',
+            description           TEXT,
+            external_id           TEXT,
+            cached_at             TEXT    NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(handle, weakness_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_h1_weakness_handle ON h1_weakness_cache(handle);
     """),
 ]
 

@@ -966,3 +966,273 @@ def check_new_programs(db_path=None) -> list[dict]:
     new_progs.sort(key=lambda p: p.get("started_accepting_at", ""), reverse=True)
 
     return new_progs
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Program Intel — Hacktivity & Weaknesses
+# ═══════════════════════════════════════════════════════════════════
+
+INTEL_CACHE_HOURS = 12
+
+
+def get_hacktivity(handle: str, max_pages: int = 5) -> list[dict]:
+    """
+    Fetch disclosed hacktivity for a program.
+
+    Uses the Lucene query syntax to filter by team handle.
+    Returns list of disclosed report summaries.
+    """
+    params = {
+        "queryString": f"team:{handle}",
+        "page[size]": "100",
+    }
+
+    all_data = []
+    page = 1
+    while page <= max_pages:
+        params["page[number]"] = str(page)
+        result = _api_request("hacktivity", params)
+        data = result.get("data", [])
+        if not data:
+            break
+        all_data.extend(data)
+        if not result.get("links", {}).get("next"):
+            break
+        page += 1
+
+    reports = []
+    for item in all_data:
+        attrs = item.get("attributes", {})
+        rels = item.get("relationships", {})
+        reporter = rels.get("reporter", {}).get("data", {}).get("attributes", {})
+        reports.append({
+            "id": str(item.get("id", "")),
+            "title": attrs.get("title", ""),
+            "severity_rating": attrs.get("severity_rating", ""),
+            "cwe": attrs.get("cwe", ""),
+            "cve_ids": attrs.get("cve_ids", []),
+            "total_awarded_amount": attrs.get("total_awarded_amount"),
+            "substate": attrs.get("substate", ""),
+            "url": attrs.get("url", ""),
+            "reporter_username": reporter.get("username", ""),
+            "disclosed_at": attrs.get("disclosed_at", ""),
+            "submitted_at": attrs.get("submitted_at", ""),
+            "votes": attrs.get("votes", 0),
+        })
+
+    return reports
+
+
+def get_weaknesses(handle: str) -> list[dict]:
+    """Fetch accepted weakness types for a program."""
+    raw = _paginate(f"programs/{quote(handle, safe='')}/weaknesses")
+
+    weaknesses = []
+    for item in raw:
+        attrs = item.get("attributes", {})
+        weaknesses.append({
+            "id": str(item.get("id", "")),
+            "name": attrs.get("name", ""),
+            "description": attrs.get("description", ""),
+            "external_id": attrs.get("external_id", ""),
+        })
+
+    return weaknesses
+
+
+def _intel_cache_fresh(handle: str, table: str, db_path=None) -> bool:
+    """Check if intel cache for a handle is fresh."""
+    from ..core.database import get_connection
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            f"SELECT COUNT(*) as cnt FROM {table} "
+            f"WHERE handle = ? AND cached_at > datetime('now', '-{int(INTEL_CACHE_HOURS)} hours')",
+            (handle,),
+        ).fetchone()
+        return row["cnt"] > 0
+
+
+def cache_hacktivity(handle: str, reports: list[dict], db_path=None):
+    """Store hacktivity reports in local cache."""
+    from ..core.database import get_connection
+    with get_connection(db_path) as conn:
+        conn.execute("DELETE FROM h1_hacktivity_cache WHERE handle = ?", (handle,))
+        for r in reports:
+            cve_str = ",".join(r.get("cve_ids", []) or [])
+            conn.execute(
+                """INSERT OR IGNORE INTO h1_hacktivity_cache
+                   (h1_report_id, handle, title, severity_rating, cwe, cve_ids,
+                    total_awarded_amount, substate, url, reporter_username,
+                    disclosed_at, submitted_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (r["id"], handle, r["title"], r["severity_rating"],
+                 r.get("cwe", ""), cve_str,
+                 r.get("total_awarded_amount"), r.get("substate", ""),
+                 r.get("url", ""), r.get("reporter_username", ""),
+                 r.get("disclosed_at", ""), r.get("submitted_at", "")),
+            )
+
+
+def cache_weaknesses(handle: str, weaknesses: list[dict], db_path=None):
+    """Store program weaknesses in local cache."""
+    from ..core.database import get_connection
+    with get_connection(db_path) as conn:
+        conn.execute("DELETE FROM h1_weakness_cache WHERE handle = ?", (handle,))
+        for w in weaknesses:
+            conn.execute(
+                """INSERT OR IGNORE INTO h1_weakness_cache
+                   (handle, weakness_id, name, description, external_id)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (handle, w["id"], w["name"], w.get("description", ""),
+                 w.get("external_id", "")),
+            )
+
+
+def get_cached_hacktivity(handle: str, db_path=None) -> list[dict]:
+    """Get cached hacktivity for a handle."""
+    from ..core.database import get_connection
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM h1_hacktivity_cache WHERE handle = ? ORDER BY disclosed_at DESC",
+            (handle,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_cached_weaknesses(handle: str, db_path=None) -> list[dict]:
+    """Get cached weaknesses for a handle."""
+    from ..core.database import get_connection
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM h1_weakness_cache WHERE handle = ? ORDER BY name",
+            (handle,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_program_intel(handle: str, refresh: bool = False, db_path=None) -> dict:
+    """
+    Get comprehensive intel for a program.
+
+    Fetches hacktivity + weaknesses (from cache or API), and computes
+    summary statistics: severity breakdown, top CWEs, bounty range,
+    top reporters, and accepted weakness types.
+
+    Returns {
+        handle, name, hacktivity: [...], weaknesses: [...],
+        stats: {total_disclosed, by_severity, by_cwe, bounty_min,
+                bounty_max, bounty_avg, top_reporters, ...}
+    }
+    """
+    # Fetch program info for name
+    program = get_program(handle)
+
+    # Hacktivity
+    if refresh or not _intel_cache_fresh(handle, "h1_hacktivity_cache", db_path):
+        reports = get_hacktivity(handle)
+        cache_hacktivity(handle, reports, db_path)
+    else:
+        reports = get_cached_hacktivity(handle, db_path)
+
+    # Weaknesses
+    if refresh or not _intel_cache_fresh(handle, "h1_weakness_cache", db_path):
+        weaknesses = get_weaknesses(handle)
+        cache_weaknesses(handle, weaknesses, db_path)
+    else:
+        weaknesses = get_cached_weaknesses(handle, db_path)
+
+    # Compute stats
+    by_severity = {}
+    by_cwe = {}
+    bounties = []
+    reporters = {}
+
+    for r in reports:
+        sev = r.get("severity_rating") or "none"
+        by_severity[sev] = by_severity.get(sev, 0) + 1
+
+        cwe = r.get("cwe") or ""
+        if cwe:
+            by_cwe[cwe] = by_cwe.get(cwe, 0) + 1
+
+        amount = r.get("total_awarded_amount")
+        if amount and amount > 0:
+            bounties.append(amount)
+
+        reporter = r.get("reporter_username") or ""
+        if reporter:
+            reporters[reporter] = reporters.get(reporter, 0) + 1
+
+    # Sort CWEs and reporters by frequency
+    top_cwes = sorted(by_cwe.items(), key=lambda x: x[1], reverse=True)[:10]
+    top_reporters = sorted(reporters.items(), key=lambda x: x[1], reverse=True)[:10]
+
+    stats = {
+        "total_disclosed": len(reports),
+        "by_severity": by_severity,
+        "top_cwes": top_cwes,
+        "bounty_min": min(bounties) if bounties else 0,
+        "bounty_max": max(bounties) if bounties else 0,
+        "bounty_avg": sum(bounties) / len(bounties) if bounties else 0,
+        "bounty_total": sum(bounties),
+        "bounty_count": len(bounties),
+        "top_reporters": top_reporters,
+    }
+
+    log_action("fetched_intel", "hackerone", None,
+               {"handle": handle, "disclosed": len(reports),
+                "weaknesses": len(weaknesses)}, db_path)
+
+    return {
+        "handle": handle,
+        "name": program["name"],
+        "offers_bounties": program.get("offers_bounties", False),
+        "hacktivity": reports,
+        "weaknesses": weaknesses,
+        "stats": stats,
+    }
+
+
+def check_new_hacktivity(db_path=None) -> list[dict]:
+    """
+    Check watched programs for newly disclosed hacktivity items.
+    Compares current hacktivity against cached data.
+
+    Returns list of {handle, name, new_reports: [...]} for programs with new disclosures.
+    """
+    from ..core.database import get_connection
+
+    watched = list_watched(db_path)
+    results = []
+
+    for w in watched:
+        handle = w["handle"]
+
+        # Get known report IDs from cache
+        with get_connection(db_path) as conn:
+            rows = conn.execute(
+                "SELECT h1_report_id FROM h1_hacktivity_cache WHERE handle = ?",
+                (handle,),
+            ).fetchall()
+        known_ids = {r["h1_report_id"] for r in rows}
+
+        # Fetch current hacktivity (just first page for efficiency)
+        try:
+            current = get_hacktivity(handle, max_pages=1)
+        except Exception:
+            continue
+
+        new_reports = [r for r in current if r["id"] not in known_ids]
+
+        if new_reports:
+            results.append({
+                "handle": handle,
+                "name": w.get("name", handle),
+                "new_reports": new_reports,
+            })
+
+        # Update cache with current data
+        if current:
+            cache_hacktivity(handle, current, db_path)
+
+    return results

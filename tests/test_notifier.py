@@ -114,9 +114,10 @@ class TestConfiguration:
 
 class TestGetStatus:
     @patch.dict("os.environ", {"BBRADAR_DISCORD_WEBHOOK": "https://discord.com/api/webhooks/test/ok"})
+    @patch("bbradar.modules.notifier.load_config", return_value={})
     @patch("bbradar.modules.notifier._get_notify_config",
            return_value={"desktop": True})
-    def test_all_configured(self, mock_cfg):
+    def test_all_configured(self, mock_cfg, mock_load):
         status = notifier.get_status()
         assert status["discord"]["configured"] is True
         assert status["discord"]["source"] == "env"

@@ -756,3 +756,471 @@ class TestCheckNewPrograms:
         handles = [p["handle"] for p in new]
         assert "prog-a" not in handles
         assert "prog-b" in handles
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Mock data: Hacktivity & Weaknesses
+# ═══════════════════════════════════════════════════════════════════
+
+def _mock_hacktivity_response(handle="testprog", count=3):
+    """Build a mock hacktivity API response."""
+    items = []
+    for i in range(count):
+        sev = ["critical", "high", "medium"][i % 3]
+        items.append({
+            "id": str(9000 + i),
+            "attributes": {
+                "title": f"Bug #{i} in {handle}",
+                "severity_rating": sev,
+                "cwe": f"CWE-{79 + i}",
+                "cve_ids": [f"CVE-2025-{1000 + i}"],
+                "total_awarded_amount": 500.0 * (i + 1),
+                "substate": "resolved",
+                "url": f"https://hackerone.com/reports/{9000 + i}",
+                "disclosed_at": f"2025-0{i + 1}-15T10:00:00Z",
+                "submitted_at": f"2025-0{i + 1}-01T10:00:00Z",
+                "votes": i + 1,
+            },
+            "relationships": {
+                "reporter": {
+                    "data": {
+                        "attributes": {
+                            "username": f"hacker{i}",
+                        }
+                    }
+                }
+            },
+        })
+    return {"data": items, "links": {}}
+
+
+def _mock_weaknesses_response():
+    """Build mock weakness items as returned by _paginate."""
+    return [
+        {
+            "id": "w1",
+            "attributes": {
+                "name": "Cross-Site Scripting (XSS)",
+                "description": "Reflected XSS",
+                "external_id": "cwe-79",
+            },
+        },
+        {
+            "id": "w2",
+            "attributes": {
+                "name": "SQL Injection",
+                "description": "SQL injection via user input",
+                "external_id": "cwe-89",
+            },
+        },
+        {
+            "id": "w3",
+            "attributes": {
+                "name": "IDOR",
+                "description": "Insecure direct object references",
+                "external_id": "cwe-639",
+            },
+        },
+    ]
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Tests: get_hacktivity
+# ═══════════════════════════════════════════════════════════════════
+
+class TestGetHacktivity:
+    @patch("bbradar.modules.hackerone._api_request")
+    def test_basic_fetch(self, mock_api):
+        resp = _mock_hacktivity_response()
+        mock_api.return_value = resp
+
+        reports = hackerone.get_hacktivity("testprog")
+        assert len(reports) == 3
+        assert reports[0]["id"] == "9000"
+        assert reports[0]["title"] == "Bug #0 in testprog"
+        assert reports[0]["severity_rating"] == "critical"
+        assert reports[0]["reporter_username"] == "hacker0"
+
+        # Verify Lucene query syntax
+        call_args = mock_api.call_args
+        assert call_args[0][0] == "hacktivity"
+        assert call_args[0][1]["queryString"] == "team:testprog"
+
+    @patch("bbradar.modules.hackerone._api_request")
+    def test_empty_hacktivity(self, mock_api):
+        mock_api.return_value = {"data": [], "links": {}}
+        reports = hackerone.get_hacktivity("empty-prog")
+        assert reports == []
+
+    @patch("bbradar.modules.hackerone._api_request")
+    def test_pagination(self, mock_api):
+        """Follows pagination when next link present."""
+        page1 = _mock_hacktivity_response(count=2)
+        page1["links"] = {"next": "https://api.hackerone.com/v1/hackers/hacktivity?page=2"}
+        page2 = _mock_hacktivity_response(count=1)
+        page2["data"][0]["id"] = "9999"
+        page2["links"] = {}
+
+        mock_api.side_effect = [page1, page2]
+        reports = hackerone.get_hacktivity("testprog", max_pages=5)
+        assert len(reports) == 3
+        assert mock_api.call_count == 2
+
+    @patch("bbradar.modules.hackerone._api_request")
+    def test_max_pages_limit(self, mock_api):
+        """Stops at max_pages even if more data available."""
+        page = _mock_hacktivity_response(count=1)
+        page["links"] = {"next": "https://api.hackerone.com/v1/hackers/hacktivity?page=2"}
+        mock_api.return_value = page
+
+        reports = hackerone.get_hacktivity("testprog", max_pages=1)
+        assert len(reports) == 1
+        assert mock_api.call_count == 1
+
+    @patch("bbradar.modules.hackerone._api_request")
+    def test_extracts_cve_ids(self, mock_api):
+        mock_api.return_value = _mock_hacktivity_response(count=1)
+        reports = hackerone.get_hacktivity("testprog")
+        assert reports[0]["cve_ids"] == ["CVE-2025-1000"]
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Tests: get_weaknesses
+# ═══════════════════════════════════════════════════════════════════
+
+class TestGetWeaknesses:
+    @patch("bbradar.modules.hackerone._paginate")
+    def test_basic_fetch(self, mock_paginate):
+        mock_paginate.return_value = _mock_weaknesses_response()
+        weaknesses = hackerone.get_weaknesses("testprog")
+
+        assert len(weaknesses) == 3
+        assert weaknesses[0]["name"] == "Cross-Site Scripting (XSS)"
+        assert weaknesses[0]["external_id"] == "cwe-79"
+        assert weaknesses[1]["name"] == "SQL Injection"
+        mock_paginate.assert_called_once_with("programs/testprog/weaknesses")
+
+    @patch("bbradar.modules.hackerone._paginate")
+    def test_empty(self, mock_paginate):
+        mock_paginate.return_value = []
+        weaknesses = hackerone.get_weaknesses("empty-prog")
+        assert weaknesses == []
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Tests: Intel caching
+# ═══════════════════════════════════════════════════════════════════
+
+class TestIntelCaching:
+    def test_cache_and_retrieve_hacktivity(self, tmp_db):
+        reports = [
+            {"id": "9000", "title": "XSS", "severity_rating": "high",
+             "cwe": "CWE-79", "cve_ids": ["CVE-2025-1000"],
+             "total_awarded_amount": 500.0, "substate": "resolved",
+             "url": "https://hackerone.com/reports/9000",
+             "reporter_username": "hacker0",
+             "disclosed_at": "2025-01-15T10:00:00Z",
+             "submitted_at": "2025-01-01T10:00:00Z"},
+            {"id": "9001", "title": "SQLi", "severity_rating": "critical",
+             "cwe": "CWE-89", "cve_ids": [],
+             "total_awarded_amount": 1000.0, "substate": "resolved",
+             "url": "", "reporter_username": "hacker1",
+             "disclosed_at": "2025-02-15T10:00:00Z",
+             "submitted_at": "2025-02-01T10:00:00Z"},
+        ]
+        hackerone.cache_hacktivity("testprog", reports, db_path=tmp_db)
+
+        cached = hackerone.get_cached_hacktivity("testprog", db_path=tmp_db)
+        assert len(cached) == 2
+        # Should be ordered by disclosed_at DESC
+        assert cached[0]["title"] == "SQLi"
+        assert cached[1]["title"] == "XSS"
+
+    def test_cache_and_retrieve_weaknesses(self, tmp_db):
+        weaknesses = [
+            {"id": "w1", "name": "XSS", "description": "Reflected XSS",
+             "external_id": "cwe-79"},
+            {"id": "w2", "name": "SQLi", "description": "",
+             "external_id": "cwe-89"},
+        ]
+        hackerone.cache_weaknesses("testprog", weaknesses, db_path=tmp_db)
+
+        cached = hackerone.get_cached_weaknesses("testprog", db_path=tmp_db)
+        assert len(cached) == 2
+        # Should be ordered by name
+        assert cached[0]["name"] == "SQLi"
+        assert cached[1]["name"] == "XSS"
+
+    def test_cache_freshness(self, tmp_db):
+        reports = [
+            {"id": "9000", "title": "XSS", "severity_rating": "high",
+             "cwe": "", "cve_ids": [], "total_awarded_amount": None,
+             "substate": "resolved", "url": "", "reporter_username": "",
+             "disclosed_at": "", "submitted_at": ""},
+        ]
+        hackerone.cache_hacktivity("testprog", reports, db_path=tmp_db)
+        assert hackerone._intel_cache_fresh("testprog", "h1_hacktivity_cache", db_path=tmp_db)
+        assert not hackerone._intel_cache_fresh("other-prog", "h1_hacktivity_cache", db_path=tmp_db)
+
+    def test_cache_replaces_old_data(self, tmp_db):
+        """Caching again replaces previous data for the same handle."""
+        reports_v1 = [
+            {"id": "9000", "title": "Old Bug", "severity_rating": "low",
+             "cwe": "", "cve_ids": [], "total_awarded_amount": None,
+             "substate": "resolved", "url": "", "reporter_username": "",
+             "disclosed_at": "", "submitted_at": ""},
+        ]
+        reports_v2 = [
+            {"id": "9001", "title": "New Bug", "severity_rating": "high",
+             "cwe": "", "cve_ids": [], "total_awarded_amount": None,
+             "substate": "resolved", "url": "", "reporter_username": "",
+             "disclosed_at": "", "submitted_at": ""},
+        ]
+        hackerone.cache_hacktivity("testprog", reports_v1, db_path=tmp_db)
+        hackerone.cache_hacktivity("testprog", reports_v2, db_path=tmp_db)
+
+        cached = hackerone.get_cached_hacktivity("testprog", db_path=tmp_db)
+        assert len(cached) == 1
+        assert cached[0]["title"] == "New Bug"
+
+    def test_separate_handle_caches(self, tmp_db):
+        """Different handles have separate caches."""
+        r1 = [{"id": "1", "title": "Bug A", "severity_rating": "high",
+               "cwe": "", "cve_ids": [], "total_awarded_amount": None,
+               "substate": "", "url": "", "reporter_username": "",
+               "disclosed_at": "", "submitted_at": ""}]
+        r2 = [{"id": "2", "title": "Bug B", "severity_rating": "low",
+               "cwe": "", "cve_ids": [], "total_awarded_amount": None,
+               "substate": "", "url": "", "reporter_username": "",
+               "disclosed_at": "", "submitted_at": ""}]
+        hackerone.cache_hacktivity("prog-a", r1, db_path=tmp_db)
+        hackerone.cache_hacktivity("prog-b", r2, db_path=tmp_db)
+
+        assert len(hackerone.get_cached_hacktivity("prog-a", db_path=tmp_db)) == 1
+        assert len(hackerone.get_cached_hacktivity("prog-b", db_path=tmp_db)) == 1
+        assert hackerone.get_cached_hacktivity("prog-a", db_path=tmp_db)[0]["title"] == "Bug A"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Tests: get_program_intel
+# ═══════════════════════════════════════════════════════════════════
+
+class TestGetProgramIntel:
+    @patch("bbradar.modules.hackerone.get_weaknesses")
+    @patch("bbradar.modules.hackerone.get_hacktivity")
+    @patch("bbradar.modules.hackerone.get_program")
+    def test_full_intel(self, mock_prog, mock_hacktivity, mock_weaknesses, tmp_db):
+        mock_prog.return_value = {
+            "handle": "testprog", "name": "Test Program",
+            "offers_bounties": True,
+        }
+        mock_hacktivity.return_value = [
+            {"id": "1", "title": "XSS", "severity_rating": "high",
+             "cwe": "CWE-79", "cve_ids": [], "total_awarded_amount": 500.0,
+             "substate": "resolved", "url": "", "reporter_username": "alice",
+             "disclosed_at": "2025-01-15", "submitted_at": "2025-01-01"},
+            {"id": "2", "title": "SQLi", "severity_rating": "critical",
+             "cwe": "CWE-89", "cve_ids": [], "total_awarded_amount": 2000.0,
+             "substate": "resolved", "url": "", "reporter_username": "bob",
+             "disclosed_at": "2025-02-15", "submitted_at": "2025-02-01"},
+            {"id": "3", "title": "CSRF", "severity_rating": "medium",
+             "cwe": "CWE-352", "cve_ids": [], "total_awarded_amount": None,
+             "substate": "resolved", "url": "", "reporter_username": "alice",
+             "disclosed_at": "2025-03-15", "submitted_at": "2025-03-01"},
+        ]
+        mock_weaknesses.return_value = [
+            {"id": "w1", "name": "XSS", "description": "", "external_id": "cwe-79"},
+        ]
+
+        intel = hackerone.get_program_intel("testprog", refresh=True, db_path=tmp_db)
+
+        assert intel["handle"] == "testprog"
+        assert intel["name"] == "Test Program"
+        assert intel["offers_bounties"] is True
+        assert len(intel["hacktivity"]) == 3
+        assert len(intel["weaknesses"]) == 1
+
+        stats = intel["stats"]
+        assert stats["total_disclosed"] == 3
+        assert stats["by_severity"]["high"] == 1
+        assert stats["by_severity"]["critical"] == 1
+        assert stats["by_severity"]["medium"] == 1
+        assert stats["bounty_min"] == 500.0
+        assert stats["bounty_max"] == 2000.0
+        assert stats["bounty_avg"] == 1250.0
+        assert stats["bounty_total"] == 2500.0
+        assert stats["bounty_count"] == 2
+
+        # Top reporters
+        reporter_names = [r[0] for r in stats["top_reporters"]]
+        assert "alice" in reporter_names
+        assert "bob" in reporter_names
+
+        # Top CWEs
+        cwe_names = [c[0] for c in stats["top_cwes"]]
+        assert "CWE-79" in cwe_names
+
+    @patch("bbradar.modules.hackerone.get_weaknesses")
+    @patch("bbradar.modules.hackerone.get_hacktivity")
+    @patch("bbradar.modules.hackerone.get_program")
+    def test_uses_cache_when_fresh(self, mock_prog, mock_hacktivity, mock_weaknesses, tmp_db):
+        """Should use cached data when available and not refreshing."""
+        mock_prog.return_value = {
+            "handle": "testprog", "name": "Test Program",
+            "offers_bounties": True,
+        }
+        # Seed cache
+        reports = [
+            {"id": "1", "title": "Cached Bug", "severity_rating": "low",
+             "cwe": "", "cve_ids": [], "total_awarded_amount": None,
+             "substate": "resolved", "url": "", "reporter_username": "",
+             "disclosed_at": "", "submitted_at": ""},
+        ]
+        hackerone.cache_hacktivity("testprog", reports, db_path=tmp_db)
+        hackerone.cache_weaknesses("testprog", [
+            {"id": "w1", "name": "XSS", "description": "", "external_id": "cwe-79"},
+        ], db_path=tmp_db)
+
+        intel = hackerone.get_program_intel("testprog", refresh=False, db_path=tmp_db)
+        # API should NOT be called for hacktivity/weaknesses
+        mock_hacktivity.assert_not_called()
+        mock_weaknesses.assert_not_called()
+        assert intel["stats"]["total_disclosed"] == 1
+
+    @patch("bbradar.modules.hackerone.get_weaknesses")
+    @patch("bbradar.modules.hackerone.get_hacktivity")
+    @patch("bbradar.modules.hackerone.get_program")
+    def test_no_bounties(self, mock_prog, mock_hacktivity, mock_weaknesses, tmp_db):
+        """Stats with no paid bounties."""
+        mock_prog.return_value = {
+            "handle": "testprog", "name": "Test",
+            "offers_bounties": False,
+        }
+        mock_hacktivity.return_value = [
+            {"id": "1", "title": "Bug", "severity_rating": "low",
+             "cwe": "", "cve_ids": [], "total_awarded_amount": None,
+             "substate": "resolved", "url": "", "reporter_username": "",
+             "disclosed_at": "", "submitted_at": ""},
+        ]
+        mock_weaknesses.return_value = []
+
+        intel = hackerone.get_program_intel("testprog", refresh=True, db_path=tmp_db)
+        assert intel["stats"]["bounty_count"] == 0
+        assert intel["stats"]["bounty_min"] == 0
+        assert intel["stats"]["bounty_max"] == 0
+        assert intel["stats"]["bounty_avg"] == 0
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Tests: check_new_hacktivity
+# ═══════════════════════════════════════════════════════════════════
+
+class TestCheckNewHacktivity:
+    @patch("bbradar.modules.hackerone.get_hacktivity")
+    def test_detects_new_disclosures(self, mock_hacktivity, tmp_db):
+        """Detects newly disclosed reports vs cached data."""
+        from bbradar.core.database import get_connection
+
+        # Set up a watched program
+        with get_connection(tmp_db) as conn:
+            conn.execute(
+                "INSERT INTO h1_watched_programs (handle, name) VALUES (?, ?)",
+                ("testprog", "Test Program"),
+            )
+
+        # Seed cache with one known report
+        hackerone.cache_hacktivity("testprog", [
+            {"id": "9000", "title": "Known Bug", "severity_rating": "high",
+             "cwe": "", "cve_ids": [], "total_awarded_amount": None,
+             "substate": "resolved", "url": "", "reporter_username": "",
+             "disclosed_at": "", "submitted_at": ""},
+        ], db_path=tmp_db)
+
+        # API returns the known report + a new one
+        mock_hacktivity.return_value = [
+            {"id": "9000", "title": "Known Bug", "severity_rating": "high",
+             "cwe": "", "cve_ids": [], "total_awarded_amount": None,
+             "substate": "resolved", "url": "", "reporter_username": "",
+             "disclosed_at": "", "submitted_at": ""},
+            {"id": "9001", "title": "New Bug", "severity_rating": "critical",
+             "cwe": "CWE-79", "cve_ids": [], "total_awarded_amount": 1000.0,
+             "substate": "resolved", "url": "", "reporter_username": "finder",
+             "disclosed_at": "2025-04-01", "submitted_at": "2025-03-01"},
+        ]
+
+        results = hackerone.check_new_hacktivity(db_path=tmp_db)
+        assert len(results) == 1
+        assert results[0]["handle"] == "testprog"
+        assert len(results[0]["new_reports"]) == 1
+        assert results[0]["new_reports"][0]["id"] == "9001"
+
+    @patch("bbradar.modules.hackerone.get_hacktivity")
+    def test_no_new_disclosures(self, mock_hacktivity, tmp_db):
+        """Returns empty when no new disclosures found."""
+        from bbradar.core.database import get_connection
+
+        with get_connection(tmp_db) as conn:
+            conn.execute(
+                "INSERT INTO h1_watched_programs (handle, name) VALUES (?, ?)",
+                ("testprog", "Test Program"),
+            )
+
+        hackerone.cache_hacktivity("testprog", [
+            {"id": "9000", "title": "Known Bug", "severity_rating": "high",
+             "cwe": "", "cve_ids": [], "total_awarded_amount": None,
+             "substate": "resolved", "url": "", "reporter_username": "",
+             "disclosed_at": "", "submitted_at": ""},
+        ], db_path=tmp_db)
+
+        # Same data as cache
+        mock_hacktivity.return_value = [
+            {"id": "9000", "title": "Known Bug", "severity_rating": "high",
+             "cwe": "", "cve_ids": [], "total_awarded_amount": None,
+             "substate": "resolved", "url": "", "reporter_username": "",
+             "disclosed_at": "", "submitted_at": ""},
+        ]
+
+        results = hackerone.check_new_hacktivity(db_path=tmp_db)
+        assert results == []
+
+    @patch("bbradar.modules.hackerone.get_hacktivity")
+    def test_api_error_skips_program(self, mock_hacktivity, tmp_db):
+        """API errors for a program should be skipped gracefully."""
+        from bbradar.core.database import get_connection
+
+        with get_connection(tmp_db) as conn:
+            conn.execute(
+                "INSERT INTO h1_watched_programs (handle, name) VALUES (?, ?)",
+                ("testprog", "Test Program"),
+            )
+
+        mock_hacktivity.side_effect = Exception("API error")
+
+        results = hackerone.check_new_hacktivity(db_path=tmp_db)
+        assert results == []
+
+    @patch("bbradar.modules.hackerone.get_hacktivity")
+    def test_empty_cache_all_new(self, mock_hacktivity, tmp_db):
+        """With empty cache, all reports are counted as new."""
+        from bbradar.core.database import get_connection
+
+        with get_connection(tmp_db) as conn:
+            conn.execute(
+                "INSERT INTO h1_watched_programs (handle, name) VALUES (?, ?)",
+                ("testprog", "Test Program"),
+            )
+
+        mock_hacktivity.return_value = [
+            {"id": "9000", "title": "Bug A", "severity_rating": "high",
+             "cwe": "", "cve_ids": [], "total_awarded_amount": None,
+             "substate": "resolved", "url": "", "reporter_username": "",
+             "disclosed_at": "", "submitted_at": ""},
+            {"id": "9001", "title": "Bug B", "severity_rating": "medium",
+             "cwe": "", "cve_ids": [], "total_awarded_amount": None,
+             "substate": "resolved", "url": "", "reporter_username": "",
+             "disclosed_at": "", "submitted_at": ""},
+        ]
+
+        results = hackerone.check_new_hacktivity(db_path=tmp_db)
+        assert len(results) == 1
+        assert len(results[0]["new_reports"]) == 2
