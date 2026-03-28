@@ -351,6 +351,51 @@ CREATE INDEX IF NOT EXISTS idx_kb_capec_name ON kb_capec(name);
 CREATE INDEX IF NOT EXISTS idx_kb_nuclei_severity ON kb_nuclei(severity);
 CREATE INDEX IF NOT EXISTS idx_kb_nuclei_cwe ON kb_nuclei(cwe_id);
 
+-- NVD CVE entries
+CREATE TABLE IF NOT EXISTS kb_cve (
+    cve_id          TEXT PRIMARY KEY,
+    description     TEXT,
+    cvss_v31_score  REAL,
+    cvss_v31_vector TEXT,
+    cvss_v31_severity TEXT,
+    cwe_ids         TEXT,                              -- JSON array of CWE IDs
+    affected_products TEXT,                            -- JSON array of CPE strings
+    "references"    TEXT,                              -- JSON array of {url, source, tags}
+    published_at    TEXT,
+    modified_at     TEXT,
+    source          TEXT    NOT NULL DEFAULT 'nvd',
+    synced_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_kb_cve_published ON kb_cve(published_at);
+CREATE INDEX IF NOT EXISTS idx_kb_cve_severity ON kb_cve(cvss_v31_severity);
+
+-- CISA Known Exploited Vulnerabilities
+CREATE TABLE IF NOT EXISTS kb_kev (
+    cve_id          TEXT PRIMARY KEY,
+    vendor          TEXT,
+    product         TEXT,
+    name            TEXT,
+    description     TEXT,
+    date_added      TEXT,
+    due_date        TEXT,
+    required_action TEXT,
+    known_ransomware TEXT,
+    notes           TEXT,
+    synced_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_kb_kev_date_added ON kb_kev(date_added);
+
+-- EPSS exploit prediction scores
+CREATE TABLE IF NOT EXISTS kb_epss (
+    cve_id          TEXT PRIMARY KEY,
+    epss_score      REAL    NOT NULL,                  -- probability 0.0-1.0
+    percentile      REAL,                              -- percentile rank 0.0-1.0
+    model_version   TEXT,
+    score_date      TEXT,
+    synced_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_kb_epss_score ON kb_epss(epss_score);
+
 -- ═══ Scope Rules ═══
 
 -- Structured scope rules for pattern-based matching
@@ -549,6 +594,49 @@ MIGRATIONS = [
             UNIQUE(handle, weakness_id)
         );
         CREATE INDEX IF NOT EXISTS idx_h1_weakness_handle ON h1_weakness_cache(handle);
+    """),
+    (5, "Add NVD CVE, CISA KEV, and EPSS tables", """
+        CREATE TABLE IF NOT EXISTS kb_cve (
+            cve_id          TEXT PRIMARY KEY,
+            description     TEXT,
+            cvss_v31_score  REAL,
+            cvss_v31_vector TEXT,
+            cvss_v31_severity TEXT,
+            cwe_ids         TEXT,
+            affected_products TEXT,
+            "references"    TEXT,
+            published_at    TEXT,
+            modified_at     TEXT,
+            source          TEXT    NOT NULL DEFAULT 'nvd',
+            synced_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_kb_cve_published ON kb_cve(published_at);
+        CREATE INDEX IF NOT EXISTS idx_kb_cve_severity ON kb_cve(cvss_v31_severity);
+
+        CREATE TABLE IF NOT EXISTS kb_kev (
+            cve_id          TEXT PRIMARY KEY,
+            vendor          TEXT,
+            product         TEXT,
+            name            TEXT,
+            description     TEXT,
+            date_added      TEXT,
+            due_date        TEXT,
+            required_action TEXT,
+            known_ransomware TEXT,
+            notes           TEXT,
+            synced_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_kb_kev_date_added ON kb_kev(date_added);
+
+        CREATE TABLE IF NOT EXISTS kb_epss (
+            cve_id          TEXT PRIMARY KEY,
+            epss_score      REAL    NOT NULL,
+            percentile      REAL,
+            model_version   TEXT,
+            score_date      TEXT,
+            synced_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_kb_epss_score ON kb_epss(epss_score);
     """),
 ]
 

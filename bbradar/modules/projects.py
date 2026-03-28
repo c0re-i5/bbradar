@@ -70,6 +70,11 @@ def update_project(project_id: int, db_path=None, **kwargs) -> bool:
 def delete_project(project_id: int, db_path=None) -> bool:
     """Delete a project and all related data (cascades)."""
     with get_connection(db_path) as conn:
+        # Unwatch any linked H1 program
+        conn.execute(
+            "DELETE FROM h1_watched_programs WHERE project_id = ?",
+            (project_id,),
+        )
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
     log_action("deleted", "project", project_id, db_path=db_path)
     return True

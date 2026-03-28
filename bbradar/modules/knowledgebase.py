@@ -1,16 +1,20 @@
 """
 Knowledge Base — External vulnerability databases.
 
-Integrates CWE (MITRE), CAPEC (MITRE), Bugcrowd VRT, and Nuclei
-templates into a local searchable knowledge base. Uses conditional
-HTTP requests (ETag / If-Modified-Since) and minimum sync intervals
-to avoid redundant downloads.
+Integrates CWE (MITRE), CAPEC (MITRE), Bugcrowd VRT, Nuclei templates,
+NVD CVE data, CISA KEV (Known Exploited Vulnerabilities), and FIRST EPSS
+(Exploit Prediction Scoring) into a local searchable knowledge base. Uses
+conditional HTTP requests (ETag / If-Modified-Since) and minimum sync
+intervals to avoid redundant downloads.
 
 Sources:
     CWE    — Common Weakness Enumeration          (MITRE, quarterly)
     CAPEC  — Common Attack Pattern Enumeration     (MITRE, quarterly)
     VRT    — Vulnerability Rating Taxonomy         (Bugcrowd, open-source)
     Nuclei — Detection templates                   (ProjectDiscovery, frequent)
+    CVE    — National Vulnerability Database       (NIST NVD API 2.0)
+    KEV    — Known Exploited Vulnerabilities       (CISA, daily)
+    EPSS   — Exploit Prediction Scoring System     (FIRST.org, daily)
 """
 
 import hashlib
@@ -57,9 +61,24 @@ SOURCES = {
         "description": "ProjectDiscovery Nuclei Templates",
         "min_sync_hours": 24,
     },
+    "cve": {
+        "url": "https://services.nvd.nist.gov/rest/json/cves/2.0",
+        "description": "NVD — NIST National Vulnerability Database (CVEs)",
+        "min_sync_hours": 6,  # check every 6h, incremental
+    },
+    "kev": {
+        "url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+        "description": "CISA KEV — Known Exploited Vulnerabilities",
+        "min_sync_hours": 12,
+    },
+    "epss": {
+        "url": "https://api.first.org/data/v1/epss?envelope=true&pretty=false",
+        "description": "FIRST EPSS — Exploit Prediction Scoring System",
+        "min_sync_hours": 24,
+    },
 }
 
-USER_AGENT = "BBRadar/0.1 (Bug Bounty Assessment Platform)"
+USER_AGENT = "BBRadar/0.5.1 (Bug Bounty Assessment Platform)"
 
 
 def _kb_dir() -> Path:
@@ -834,6 +853,476 @@ def _insert_nuclei_batch(rows, db_path=None):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# NVD CVE Sync & Parse
+# ═══════════════════════════════════════════════════════════════════
+
+def sync_cve(force: bool = False, db_path=None, callback=None) -> dict:
+    """
+    Download CVE data from NVD API 2.0.
+
+    Does incremental sync: on first run fetches recent CVEs (last 120 days);
+    on subsequent runs fetches only CVEs modified since last sync.
+    NVD rate limits to ~5 requests per 30 seconds without an API key.
+    """
+    import time as _time
+
+    source = "cve"
+    result = {"source": source, "status": "skipped", "records": 0}
+
+    if _should_skip(source, force, db_path):
+        info = _get_sync_info(source, db_path)
+        result["records"] = info.get("record_count", 0) if info else 0
+        result["reason"] = "recently synced"
+        return result
+
+    if callback:
+        callback("  Checking NVD CVE database...")
+
+    info = _get_sync_info(source, db_path) or {}
+    base_url = SOURCES[source]["url"]
+
+    # Build date range for incremental sync
+    if info.get("last_sync"):
+        # Incremental: fetch CVEs modified since last sync
+        last = info["last_sync"][:19].replace("T", " ").replace(" ", "T")
+        params = f"lastModStartDate={last}Z&lastModEndDate={datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')}Z"
+    else:
+        # Initial: last 120 days of CVEs
+        start = (datetime.now(timezone.utc) - timedelta(days=120)).strftime("%Y-%m-%dT%H:%M:%S")
+        end = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        params = f"pubStartDate={start}Z&pubEndDate={end}Z"
+
+    total_results = 0
+    start_index = 0
+    batch_size = 2000
+    total_count = 0
+
+    while True:
+        url = f"{base_url}?{params}&startIndex={start_index}&resultsPerPage={batch_size}"
+
+        if callback:
+            callback(f"    Fetching CVEs (offset {start_index})...")
+
+        try:
+            data, _, _ = _fetch(url, timeout=180)
+        except (HTTPError, URLError) as e:
+            if total_count == 0:
+                result["status"] = "error"
+                result["reason"] = str(e)
+                return result
+            break  # partial success
+
+        if data is None:
+            break
+
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError:
+            result["status"] = "error"
+            result["reason"] = "invalid JSON from NVD"
+            return result
+
+        vulnerabilities = payload.get("vulnerabilities", [])
+        total_results = payload.get("totalResults", 0)
+
+        if not vulnerabilities:
+            break
+
+        rows = []
+        for item in vulnerabilities:
+            cve = item.get("cve", {})
+            row = _parse_nvd_cve(cve)
+            if row:
+                rows.append(row)
+
+        if rows:
+            _insert_cve_batch(rows, db_path)
+            total_count += len(rows)
+
+        start_index += len(vulnerabilities)
+        if start_index >= total_results:
+            break
+
+        # NVD rate limit: ~5 requests per 30s without API key
+        _time.sleep(6)
+
+    # Get current total in DB
+    with get_connection(db_path) as conn:
+        db_total = conn.execute("SELECT COUNT(*) as c FROM kb_cve").fetchone()["c"]
+
+    _set_sync_info(source, db_total, db_path=db_path)
+
+    if total_count > 0:
+        result["status"] = "updated"
+        result["records"] = db_total
+        result["new_cves"] = total_count
+        if callback:
+            callback(f"  CVE: {total_count} CVEs synced ({db_total} total in DB)")
+    elif total_results == 0:
+        result["status"] = "not_modified"
+        result["records"] = db_total
+        _set_sync_info(source, db_total, db_path=db_path)
+        if callback:
+            callback("  CVE: no new or modified CVEs")
+    else:
+        result["status"] = "unchanged"
+        result["records"] = db_total
+
+    return result
+
+
+def _parse_nvd_cve(cve: dict) -> tuple | None:
+    """Parse a single CVE entry from NVD API 2.0 format."""
+    cve_id = cve.get("id", "")
+    if not cve_id:
+        return None
+
+    # Description (prefer English)
+    description = ""
+    for desc in cve.get("descriptions", []):
+        if desc.get("lang") == "en":
+            description = desc.get("value", "")
+            break
+    if not description:
+        descs = cve.get("descriptions", [])
+        description = descs[0].get("value", "") if descs else ""
+
+    # CVSS v3.1 metrics
+    cvss_score = None
+    cvss_vector = None
+    cvss_severity = None
+    metrics = cve.get("metrics", {})
+    for v31 in metrics.get("cvssMetricV31", []):
+        cvss_data = v31.get("cvssData", {})
+        cvss_score = cvss_data.get("baseScore")
+        cvss_vector = cvss_data.get("vectorString")
+        cvss_severity = cvss_data.get("baseSeverity")
+        break
+    # Fall back to v3.0
+    if cvss_score is None:
+        for v30 in metrics.get("cvssMetricV30", []):
+            cvss_data = v30.get("cvssData", {})
+            cvss_score = cvss_data.get("baseScore")
+            cvss_vector = cvss_data.get("vectorString")
+            cvss_severity = cvss_data.get("baseSeverity")
+            break
+
+    # CWE IDs
+    cwe_ids = []
+    for weakness in cve.get("weaknesses", []):
+        for desc in weakness.get("description", []):
+            val = desc.get("value", "")
+            if val.startswith("CWE-") and val != "CWE-noinfo":
+                cwe_ids.append(val)
+
+    # Affected products (CPE strings)
+    products = []
+    for config in cve.get("configurations", []):
+        for node in config.get("nodes", []):
+            for match in node.get("cpeMatch", []):
+                cpe = match.get("criteria", "")
+                if cpe:
+                    products.append(cpe)
+
+    # References
+    refs = []
+    for ref in cve.get("references", [])[:20]:
+        refs.append({
+            "url": ref.get("url", ""),
+            "source": ref.get("source", ""),
+            "tags": ref.get("tags", []),
+        })
+
+    published = cve.get("published", "")
+    modified = cve.get("lastModified", "")
+
+    return (
+        cve_id, description,
+        cvss_score, cvss_vector, cvss_severity,
+        json.dumps(cwe_ids) if cwe_ids else None,
+        json.dumps(products[:50]) if products else None,
+        json.dumps(refs) if refs else None,
+        published, modified,
+    )
+
+
+def _insert_cve_batch(rows, db_path=None):
+    with get_connection(db_path) as conn:
+        conn.executemany("""
+            INSERT INTO kb_cve (cve_id, description, cvss_v31_score, cvss_v31_vector,
+                                cvss_v31_severity, cwe_ids, affected_products,
+                                "references", published_at, modified_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(cve_id) DO UPDATE SET
+                description = excluded.description,
+                cvss_v31_score = excluded.cvss_v31_score,
+                cvss_v31_vector = excluded.cvss_v31_vector,
+                cvss_v31_severity = excluded.cvss_v31_severity,
+                cwe_ids = excluded.cwe_ids,
+                affected_products = excluded.affected_products,
+                "references" = excluded."references",
+                published_at = excluded.published_at,
+                modified_at = excluded.modified_at,
+                synced_at = datetime('now')
+        """, rows)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# CISA KEV Sync & Parse
+# ═══════════════════════════════════════════════════════════════════
+
+def sync_kev(force: bool = False, db_path=None, callback=None) -> dict:
+    """Download and parse the CISA Known Exploited Vulnerabilities catalog."""
+    source = "kev"
+    result = {"source": source, "status": "skipped", "records": 0}
+
+    if _should_skip(source, force, db_path):
+        info = _get_sync_info(source, db_path)
+        result["records"] = info.get("record_count", 0) if info else 0
+        result["reason"] = "recently synced"
+        return result
+
+    if callback:
+        callback("  Checking CISA KEV catalog...")
+
+    info = _get_sync_info(source, db_path) or {}
+    url = SOURCES[source]["url"]
+
+    try:
+        data, new_etag, new_lm = _fetch(url, info.get("etag"), info.get("last_modified"))
+    except (HTTPError, URLError) as e:
+        result["status"] = "error"
+        result["reason"] = str(e)
+        return result
+
+    if data is None:
+        if callback:
+            callback("  KEV: not modified (304)")
+        result["status"] = "not_modified"
+        info2 = _get_sync_info(source, db_path)
+        result["records"] = info2.get("record_count", 0) if info2 else 0
+        _set_sync_info(source, result["records"], new_etag, new_lm,
+                       info.get("file_hash"), db_path)
+        return result
+
+    h = _file_hash(data)
+    if h == info.get("file_hash"):
+        if callback:
+            callback("  KEV: content unchanged (hash match)")
+        result["status"] = "unchanged"
+        info2 = _get_sync_info(source, db_path)
+        result["records"] = info2.get("record_count", 0) if info2 else 0
+        _set_sync_info(source, result["records"], new_etag, new_lm, h, db_path)
+        return result
+
+    if callback:
+        callback(f"  Parsing CISA KEV catalog ({len(data) // 1024}KB)...")
+
+    try:
+        catalog = json.loads(data)
+    except json.JSONDecodeError:
+        result["status"] = "error"
+        result["reason"] = "invalid JSON from CISA"
+        return result
+
+    vulns = catalog.get("vulnerabilities", [])
+
+    # Track which CVEs are newly added to KEV since our last sync
+    existing_kev_cves = set()
+    with get_connection(db_path) as conn:
+        rows = conn.execute("SELECT cve_id FROM kb_kev").fetchall()
+        existing_kev_cves = {r["cve_id"] for r in rows}
+
+    new_kev_entries = []
+    db_rows = []
+    for v in vulns:
+        cve_id = v.get("cveID", "")
+        if not cve_id:
+            continue
+        db_rows.append((
+            cve_id,
+            v.get("vendorProject", ""),
+            v.get("product", ""),
+            v.get("vulnerabilityName", ""),
+            v.get("shortDescription", ""),
+            v.get("dateAdded", ""),
+            v.get("dueDate", ""),
+            v.get("requiredAction", ""),
+            v.get("knownRansomwareCampaignUse", ""),
+            v.get("notes", ""),
+        ))
+        if cve_id not in existing_kev_cves:
+            new_kev_entries.append({
+                "cve_id": cve_id,
+                "vendor": v.get("vendorProject", ""),
+                "product": v.get("product", ""),
+                "name": v.get("vulnerabilityName", ""),
+                "date_added": v.get("dateAdded", ""),
+            })
+
+    # Batch insert
+    for i in range(0, len(db_rows), 500):
+        batch = db_rows[i:i + 500]
+        with get_connection(db_path) as conn:
+            conn.executemany("""
+                INSERT INTO kb_kev (cve_id, vendor, product, name, description,
+                                    date_added, due_date, required_action,
+                                    known_ransomware, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(cve_id) DO UPDATE SET
+                    vendor = excluded.vendor,
+                    product = excluded.product,
+                    name = excluded.name,
+                    description = excluded.description,
+                    date_added = excluded.date_added,
+                    due_date = excluded.due_date,
+                    required_action = excluded.required_action,
+                    known_ransomware = excluded.known_ransomware,
+                    notes = excluded.notes,
+                    synced_at = datetime('now')
+            """, batch)
+
+    count = len(db_rows)
+    _set_sync_info(source, count, new_etag, new_lm, h, db_path)
+
+    result["status"] = "updated"
+    result["records"] = count
+    if new_kev_entries:
+        result["new_kev_entries"] = new_kev_entries
+    if callback:
+        new_msg = f" ({len(new_kev_entries)} new)" if new_kev_entries else ""
+        callback(f"  KEV: {count} entries loaded{new_msg}")
+
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════
+# EPSS Sync & Parse
+# ═══════════════════════════════════════════════════════════════════
+
+def sync_epss(force: bool = False, db_path=None, callback=None,
+              cve_ids: list[str] | None = None) -> dict:
+    """
+    Sync EPSS scores from FIRST.org.
+
+    If *cve_ids* are given, fetches scores only for those CVEs (up to 100).
+    Otherwise, fetches scores for all CVEs in our kb_cve table that
+    don't have EPSS data yet (or scores older than 7 days).
+    """
+    import time as _time
+
+    source = "epss"
+    result = {"source": source, "status": "skipped", "records": 0}
+
+    if not cve_ids and _should_skip(source, force, db_path):
+        info = _get_sync_info(source, db_path)
+        result["records"] = info.get("record_count", 0) if info else 0
+        result["reason"] = "recently synced"
+        return result
+
+    if callback:
+        callback("  Checking EPSS scores...")
+
+    base_url = "https://api.first.org/data/v1/epss"
+
+    # If no explicit CVE list, find CVEs needing EPSS data
+    if not cve_ids:
+        with get_connection(db_path) as conn:
+            # CVEs in our DB without EPSS scores, or with stale scores
+            stale_cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+            rows = conn.execute("""
+                SELECT c.cve_id FROM kb_cve c
+                LEFT JOIN kb_epss e ON c.cve_id = e.cve_id
+                WHERE e.cve_id IS NULL OR e.synced_at < ?
+                LIMIT 5000
+            """, (stale_cutoff,)).fetchall()
+            cve_ids = [r["cve_id"] for r in rows]
+
+    if not cve_ids:
+        result["status"] = "not_modified"
+        with get_connection(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) as c FROM kb_epss").fetchone()["c"]
+        result["records"] = count
+        _set_sync_info(source, count, db_path=db_path)
+        if callback:
+            callback("  EPSS: all scores up to date")
+        return result
+
+    # Fetch in batches of 100 (EPSS API limit)
+    total_fetched = 0
+    batch_size = 100
+
+    for i in range(0, len(cve_ids), batch_size):
+        batch = cve_ids[i:i + batch_size]
+        cve_param = ",".join(batch)
+        url = f"{base_url}?cve={cve_param}"
+
+        if callback and i > 0:
+            callback(f"    Fetching EPSS scores ({i}/{len(cve_ids)})...")
+
+        try:
+            data, _, _ = _fetch(url, timeout=60)
+        except (HTTPError, URLError) as e:
+            if total_fetched == 0:
+                result["status"] = "error"
+                result["reason"] = str(e)
+                return result
+            break
+
+        if data is None:
+            continue
+
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+
+        rows = []
+        model_version = payload.get("model_version", "")
+        score_date = payload.get("score_date", "")
+
+        for entry in payload.get("data", []):
+            cve_id = entry.get("cve", "")
+            if not cve_id:
+                continue
+            try:
+                epss_score = float(entry.get("epss", 0))
+                percentile = float(entry.get("percentile", 0))
+            except (ValueError, TypeError):
+                continue
+            rows.append((cve_id, epss_score, percentile, model_version, score_date))
+
+        if rows:
+            with get_connection(db_path) as conn:
+                conn.executemany("""
+                    INSERT INTO kb_epss (cve_id, epss_score, percentile, model_version, score_date)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(cve_id) DO UPDATE SET
+                        epss_score = excluded.epss_score,
+                        percentile = excluded.percentile,
+                        model_version = excluded.model_version,
+                        score_date = excluded.score_date,
+                        synced_at = datetime('now')
+                """, rows)
+            total_fetched += len(rows)
+
+        if i + batch_size < len(cve_ids):
+            _time.sleep(1)  # be polite to API
+
+    with get_connection(db_path) as conn:
+        db_total = conn.execute("SELECT COUNT(*) as c FROM kb_epss").fetchone()["c"]
+
+    _set_sync_info(source, db_total, db_path=db_path)
+
+    result["status"] = "updated" if total_fetched > 0 else "not_modified"
+    result["records"] = db_total
+    if callback:
+        callback(f"  EPSS: {total_fetched} scores fetched ({db_total} total)")
+
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Sync All
 # ═══════════════════════════════════════════════════════════════════
 
@@ -848,6 +1337,9 @@ def sync_all(force: bool = False, sources: list[str] | None = None,
         "capec": sync_capec,
         "vrt": sync_vrt,
         "nuclei": sync_nuclei,
+        "cve": sync_cve,
+        "kev": sync_kev,
+        "epss": sync_epss,
     }
     targets = sources or list(sync_funcs.keys())
     results = []
@@ -913,6 +1405,47 @@ def lookup_capec(capec_id: str, db_path=None) -> dict | None:
     return None
 
 
+def lookup_cve(cve_id: str, db_path=None) -> dict | None:
+    """Look up a CVE by ID with KEV and EPSS data.
+
+    Returns combined dict with CVE details, exploit status (KEV), and
+    exploitation probability (EPSS). Accepts 'CVE-2024-1234' or '2024-1234'.
+    """
+    cve_id = cve_id.upper().strip()
+    if not cve_id.startswith("CVE-"):
+        cve_id = f"CVE-{cve_id}"
+
+    result = None
+    with get_connection(db_path) as conn:
+        row = conn.execute("SELECT * FROM kb_cve WHERE cve_id = ?", (cve_id,)).fetchone()
+        if row:
+            result = dict(row)
+            for field in ("cwe_ids", "affected_products", "references"):
+                if result.get(field):
+                    result[field] = json.loads(result[field])
+
+            # Enrich with KEV data
+            kev = conn.execute("SELECT * FROM kb_kev WHERE cve_id = ?", (cve_id,)).fetchone()
+            if kev:
+                result["kev"] = dict(kev)
+                result["actively_exploited"] = True
+            else:
+                result["actively_exploited"] = False
+
+            # Enrich with EPSS data
+            epss = conn.execute("SELECT * FROM kb_epss WHERE cve_id = ?", (cve_id,)).fetchone()
+            if epss:
+                result["epss"] = dict(epss)
+        else:
+            # Try KEV-only lookup (some CVEs may not be in NVD yet)
+            kev = conn.execute("SELECT * FROM kb_kev WHERE cve_id = ?", (cve_id,)).fetchone()
+            if kev:
+                result = {"cve_id": cve_id, "kev": dict(kev), "actively_exploited": True}
+                result["description"] = kev["description"]
+
+    return result
+
+
 def browse_vrt(category: str = None, db_path=None) -> list[dict]:
     """List VRT entries, optionally filtered by category."""
     with get_connection(db_path) as conn:
@@ -944,7 +1477,7 @@ def search_kb(query: str, db_path=None) -> dict:
 
     Returns {"cwe": [...], "capec": [...], "vrt": [...], "nuclei": [...]}.
     """
-    results = {"cwe": [], "capec": [], "vrt": [], "nuclei": []}
+    results = {"cwe": [], "capec": [], "vrt": [], "nuclei": [], "cve": [], "kev": []}
     q = f"%{query}%"
 
     with get_connection(db_path) as conn:
@@ -979,6 +1512,25 @@ def search_kb(query: str, db_path=None) -> dict:
             LIMIT 25
         """, (q, q, q, q)).fetchall()
         results["nuclei"] = [dict(r) for r in rows]
+
+        # CVE
+        rows = conn.execute("""
+            SELECT cve_id, description, cvss_v31_score, cvss_v31_severity,
+                   published_at FROM kb_cve
+            WHERE cve_id LIKE ? OR description LIKE ?
+            LIMIT 25
+        """, (q, q)).fetchall()
+        results["cve"] = [dict(r) for r in rows]
+
+        # KEV
+        rows = conn.execute("""
+            SELECT cve_id, vendor, product, name, description,
+                   date_added FROM kb_kev
+            WHERE cve_id LIKE ? OR vendor LIKE ? OR product LIKE ?
+                  OR name LIKE ? OR description LIKE ?
+            LIMIT 25
+        """, (q, q, q, q, q)).fetchall()
+        results["kev"] = [dict(r) for r in rows]
 
     return results
 
@@ -1023,11 +1575,12 @@ def enrich_vuln(vuln: dict, db_path=None) -> dict:
     """
     enrichment = {}
 
+    import re
+
     # Try to find CWE ID from description or vuln data
     cwe_id = None
     desc = vuln.get("description", "") or ""
 
-    import re
     cwe_match = re.search(r"CWE-(\d+)", desc, re.IGNORECASE)
     if cwe_match:
         cwe_id = cwe_match.group(1)
@@ -1055,6 +1608,35 @@ def enrich_vuln(vuln: dict, db_path=None) -> dict:
         if nuclei_results:
             enrichment["related_nuclei"] = nuclei_results
 
+    # CVE / KEV / EPSS enrichment
+    cve_ids = re.findall(r"CVE-\d{4}-\d{4,}", desc, re.IGNORECASE)
+    # Also check explicit cve_id field
+    explicit_cve = vuln.get("cve_id") or vuln.get("cve") or ""
+    if explicit_cve and explicit_cve not in cve_ids:
+        cve_ids.insert(0, explicit_cve)
+
+    if cve_ids:
+        cve_details = []
+        for cveid in cve_ids[:5]:
+            detail = lookup_cve(cveid, db_path)
+            if detail:
+                cve_details.append(detail)
+        if cve_details:
+            enrichment["cve_details"] = cve_details
+            # Surface exploit status at top level
+            if any(d.get("actively_exploited") for d in cve_details):
+                enrichment["actively_exploited"] = True
+                enrichment["kev_entries"] = [
+                    d["kev"] for d in cve_details if d.get("kev")
+                ]
+            # Surface highest EPSS score
+            epss_scores = [
+                d["epss"]["epss_score"]
+                for d in cve_details if d.get("epss")
+            ]
+            if epss_scores:
+                enrichment["max_epss_score"] = max(epss_scores)
+
     return enrichment
 
 
@@ -1062,7 +1644,8 @@ def kb_stats(db_path=None) -> dict:
     """Return record counts for all KB tables."""
     stats = {}
     with get_connection(db_path) as conn:
-        for table in ("kb_cwe", "kb_capec", "kb_vrt", "kb_nuclei"):
+        for table in ("kb_cwe", "kb_capec", "kb_vrt", "kb_nuclei",
+                      "kb_cve", "kb_kev", "kb_epss"):
             row = conn.execute(f"SELECT COUNT(*) as c FROM {table}").fetchone()
             stats[table.replace("kb_", "")] = row["c"] if row else 0
     return stats

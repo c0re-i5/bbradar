@@ -12,7 +12,7 @@ from .vuln_templates import (
 )
 from .projects import create_project, list_projects, get_project
 from .targets import add_target, list_targets, get_target, VALID_ASSET_TYPES, VALID_TIERS
-from .vulns import create_vuln, update_vuln, add_evidence, find_duplicates
+from .vulns import create_vuln, update_vuln, add_evidence, find_duplicates, VALID_VULN_TYPES
 from .notes import create_note
 from .scope import check_scope, list_rules
 from ..core.utils import severity_color
@@ -74,13 +74,21 @@ def _prompt_multiline(label: str) -> str:
 
 def _pick_project(db_path=None) -> int | None:
     """Let user pick a project interactively."""
+    from ..core.config import get_active_project
+    active = get_active_project()
     projs = list_projects(db_path=db_path)
     if not projs:
         print("\n  No projects found. Create one first with 'bb project create' or 'bb wizard project'.\n")
         return None
+    if active is not None:
+        active_proj = next((p for p in projs if p["id"] == active), None)
+        if active_proj:
+            if _prompt_yn(f"Use active project [{active_proj['id']}] {active_proj['name']}?"):
+                return active
     print("\n  Available projects:")
     for p in projs:
-        print(f"    [{p['id']}] {p['name']} ({p['status']})")
+        marker = " ← active" if p["id"] == active else ""
+        print(f"    [{p['id']}] {p['name']} ({p['status']}){marker}")
     while True:
         val = input("\n  Project ID: ").strip()
         try:
@@ -146,31 +154,53 @@ def wizard_project(db_path=None) -> int:
                          scope_raw=scope or None, rules=rules or None, db_path=db_path)
     print(f"\n  ✓ Created project [{pid}] {name}")
 
-    # Offer to define scope rules
-    if _prompt_yn("Define scope rules now?", default=True):
-        print("\n  Enter scope patterns one per line (wildcards like *.example.com, CIDRs, exact).")
-        print("  Prefix with ! to exclude. Blank line when done.\n")
-        lines = []
-        while True:
-            try:
-                line = input("  scope> ").strip()
-                if not line:
-                    break
-                lines.append(line)
-            except EOFError:
-                break
-        if lines:
-            from .scope import import_from_text
-            result = import_from_text(pid, "\n".join(lines), source="wizard", db_path=db_path)
-            added = result.get("added", 0)
-            print(f"  ✓ Added {added} scope rule(s)")
+    # Offer H1 scope import for HackerOne projects
+    h1_synced = False
+    if platform == "hackerone":
+        try:
+            from . import hackerone
+            auth = hackerone.check_auth()
+            if auth.get("valid"):
+                if _prompt_yn("Import scope & targets from HackerOne?", default=True):
+                    handle = _prompt("H1 program handle", default=name.replace(" ", "_").lower())
+                    try:
+                        result = hackerone.sync_scope(pid, handle, db_path=db_path)
+                        nt = result.get("new_targets", 0)
+                        nr = result.get("new_rules", 0)
+                        print(f"  ✓ Imported {nt} target(s) and {nr} scope rule(s) from H1")
+                        h1_synced = True
+                    except Exception as e:
+                        print(f"  ✗ H1 import failed: {e}")
+                        print("  Falling back to manual entry...")
+        except Exception:
+            pass  # H1 not configured, skip silently
 
-    # Offer to add targets immediately
-    if _prompt_yn("Add targets now?"):
-        while True:
-            wizard_target(project_id=pid, db_path=db_path)
-            if not _prompt_yn("Add another target?"):
-                break
+    if not h1_synced:
+        # Offer to define scope rules
+        if _prompt_yn("Define scope rules now?", default=True):
+            print("\n  Enter scope patterns one per line (wildcards like *.example.com, CIDRs, exact).")
+            print("  Prefix with ! to exclude. Blank line when done.\n")
+            lines = []
+            while True:
+                try:
+                    line = input("  scope> ").strip()
+                    if not line:
+                        break
+                    lines.append(line)
+                except EOFError:
+                    break
+            if lines:
+                from .scope import import_from_text
+                result = import_from_text(pid, "\n".join(lines), source="wizard", db_path=db_path)
+                added = result.get("added", 0)
+                print(f"  ✓ Added {added} scope rule(s)")
+
+        # Offer to add targets immediately
+        if _prompt_yn("Add targets now?"):
+            while True:
+                wizard_target(project_id=pid, db_path=db_path)
+                if not _prompt_yn("Add another target?"):
+                    break
 
     print(f"\n✅ Project [{pid}] is ready. Start with 'bb recon run' or 'bb workflow run'.\n")
     return pid
@@ -199,10 +229,17 @@ def wizard_target(project_id: int = None, db_path=None) -> int:
     if rules:
         result = check_scope(project_id, value, db_path=db_path)
         if result["in_scope"] is True:
-            print(f"  ✓ Scope check: IN-SCOPE ({result['reason']})")
+            matched = result.get("matched_rule")
+            rule_info = f" (rule #{matched['id']}: {matched['pattern']})" if matched else ""
+            print(f"  \u2713 Scope check: IN-SCOPE{rule_info}")
             in_scope = True
         elif result["in_scope"] is False:
-            print(f"  ⚠ Scope check: OUT-OF-SCOPE ({result['reason']})")
+            matched = result.get("matched_rule")
+            if matched:
+                rule_info = f" (rule #{matched['id']}: {matched['rule_type']} {matched['pattern']})"
+            else:
+                rule_info = " (no matching include rule)"
+            print(f"  \u26a0 Scope check: OUT-OF-SCOPE{rule_info}")
             in_scope = False
         # else: no matching rule, keep user's choice
 
@@ -368,7 +405,7 @@ def _wizard_vuln_manual(project_id: int, target_id: int | None,
 
     title = _prompt("Title", required=True)
     severity = _prompt_choice("Severity", ["critical", "high", "medium", "low", "informational"], "medium")
-    vuln_type = _prompt("Vuln type (xss/sqli/ssrf/idor/rce/... or Enter to skip)")
+    vuln_type = _prompt(f"Vuln type ({'/'.join(sorted(list(VALID_VULN_TYPES)[:8]))}... or Enter to skip)")
 
     description = _prompt_multiline("Description")
     impact = _prompt_multiline("Impact")

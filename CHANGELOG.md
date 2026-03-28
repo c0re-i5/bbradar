@@ -2,6 +2,95 @@
 
 All notable changes to BBRadar will be documented in this file.
 
+## [0.5.1] — 2026-03-28
+
+### Added
+
+- **NVD CVE database** — sync and search the NIST National Vulnerability Database:
+  - `bb kb sync --source cve` — incremental sync via NVD REST API 2.0
+    (fetches only modified CVEs after initial load; 120-day window on first sync)
+  - `bb kb cve CVE-2024-1234` — full CVE detail view: description, CVSS v3.1
+    score/vector/severity, CWE mappings, affected CPE products, references,
+    published/modified dates, KEV exploit status, and EPSS probability
+  - Parsed fields: CVSS v3.1 (with v3.0 fallback), CWE IDs (excluding
+    CWE-noinfo), affected CPE products, reference URLs with tags
+  - NVD rate-limit aware (6s delay between paginated requests)
+  - DB table: `kb_cve` with indexes on published date and severity
+
+- **CISA KEV catalog** — track actively exploited vulnerabilities:
+  - `bb kb sync --source kev` — download the CISA Known Exploited
+    Vulnerabilities catalog with conditional HTTP and content hash dedup
+  - `bb kb kev` — browse recent KEV entries sorted by date added
+  - `bb kb kev --search "apache"` — search by vendor, product, or CVE ID
+  - Tracks newly added KEV entries between syncs for notification dispatch
+  - Ransomware campaign usage flagged in output
+  - DB table: `kb_kev`
+
+- **EPSS scores** — exploitation probability from FIRST.org:
+  - `bb kb sync --source epss` — fetch EPSS scores for CVEs in the local
+    database (batched, 100 per request per API limits)
+  - Auto-refreshes stale scores (>7 days old) during sync
+  - Supports targeted fetch for specific CVE lists
+  - DB table: `kb_epss`
+
+- **CVE lookup with combined intelligence** — `lookup_cve()` returns CVE
+  details enriched with KEV exploit status and EPSS probability in a single
+  call. Falls back to KEV-only lookup for zero-days not yet in NVD.
+
+- **Enhanced vulnerability enrichment** — `enrich_vuln()` now extracts CVE
+  IDs from descriptions and explicit fields, surfaces `actively_exploited`
+  flag and `max_epss_score` alongside existing CWE/CAPEC/Nuclei enrichment.
+
+- **Cross-source KB search** — `bb kb search` now includes CVE and KEV
+  results alongside CWE, CAPEC, VRT, and Nuclei matches.
+
+- **KEV notifications** — Discord embed + desktop alerts when new entries
+  appear in the CISA KEV catalog during sync:
+  - `notify_new_kev()` with red severity embed and ransomware flag
+  - Works with existing Discord webhook configuration
+
+- **Active project auto-resolution** — all project-scoped commands now
+  auto-resolve the project ID from `bb use` context. No need to pass
+  `project_id` explicitly for:
+  - `bb scope add/exclude/list/clear/check/check-file/import/validate/overview`
+  - `bb ingest file/dir/pipe/summary`
+  - `bb report full/executive`
+  - `bb vuln quick`
+  - `bb h1 scope-sync/watch/unwatch/intel/weaknesses` (auto-resolves both
+    project ID and H1 handle from the active project's `h1_handle` column)
+
+- **H1 scope import in project wizard** — `bb wizard project` now offers to
+  import scope from HackerOne when the platform is set to "hackerone" and
+  H1 credentials are configured.
+
+- **Wizard active project default** — `bb wizard target` and `bb wizard vuln`
+  now offer the active project as a Y/n default instead of always listing
+  all projects.
+
+- DB migration #5: `kb_cve`, `kb_kev`, `kb_epss` tables with indexes
+- 42 new tests covering sync parsing, lookup, search, enrichment,
+  notifications, DB schema, and migration (337 total)
+
+### Changed
+
+- `bb kb` help text and parser updated to reflect all 7 sources
+  (CWE, CAPEC, VRT, Nuclei, CVE, KEV, EPSS)
+- `bb kb sync` choices expanded: `--source cve|kev|epss` alongside existing
+  `cwe|capec|vrt|nuclei|all`
+- `kb_stats()` now reports counts for all 7 KB tables
+- `search_kb()` returns `cve` and `kev` result categories
+- User-Agent updated to `BBRadar/0.5.1` across all HTTP clients
+
+### Fixed
+
+- **`offers_bounties` false negative** — `bb h1 intel` now checks scope asset
+  `eligible_for_bounty` as a fallback when the H1 API returns
+  `offers_bounties: false/null` for programs that do pay bounties.
+- **KEV sync 404** — fixed CISA KEV catalog URL (underscores, not hyphens).
+- **Stale watchlist after project delete** — `delete_project()` now removes
+  linked H1 watch entries so `bb h1 check` no longer checks programs for
+  deleted projects.
+
 ## [0.4.0] — 2026-03-26
 
 ### Added

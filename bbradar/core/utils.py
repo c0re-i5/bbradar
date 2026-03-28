@@ -118,3 +118,115 @@ def safe_json_loads(text: str, default=None):
 def ensure_file_dir(file_path: Path):
     """Ensure the parent directory of a file exists."""
     file_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Input Validation
+# ═══════════════════════════════════════════════════════════════════
+
+def validate_domain(value: str) -> str | None:
+    """Validate a domain name. Returns error message or None if valid."""
+    if not value or len(value) > 253:
+        return "Domain name is empty or too long (max 253 chars)"
+    # Allow wildcards like *.example.com
+    clean = value.lstrip("*.")
+    if not clean:
+        return "Domain name is empty after stripping wildcards"
+    labels = clean.split(".")
+    for label in labels:
+        if not label:
+            return "Domain has empty label (double dots)"
+        if len(label) > 63:
+            return f"Label '{label}' exceeds 63 chars"
+        if not re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$', label):
+            return f"Invalid label '{label}' — must be alphanumeric (hyphens allowed in middle)"
+    return None
+
+
+def validate_ip(value: str) -> str | None:
+    """Validate an IP address (v4 or v6). Returns error message or None if valid."""
+    import ipaddress
+    try:
+        ipaddress.ip_address(value)
+        return None
+    except ValueError:
+        return f"'{value}' is not a valid IP address"
+
+
+def validate_cidr(value: str) -> str | None:
+    """Validate a CIDR range. Returns error message or None if valid."""
+    import ipaddress
+    try:
+        ipaddress.ip_network(value, strict=False)
+        return None
+    except ValueError:
+        return f"'{value}' is not a valid CIDR range"
+
+
+def validate_url(value: str) -> str | None:
+    """Validate a URL. Returns error message or None if valid."""
+    from urllib.parse import urlparse
+    if not value:
+        return "URL is empty"
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https", ""):
+        return f"Invalid scheme '{parsed.scheme}' — expected http or https"
+    if not parsed.netloc and not parsed.path:
+        return "URL has no host or path"
+    return None
+
+
+def validate_target_value(value: str, asset_type: str) -> str | None:
+    """
+    Validate a target value based on its asset type.
+    Returns error message string, or None if valid.
+    """
+    value = value.strip()
+    if not value:
+        return "Target value is empty"
+
+    validators = {
+        "domain": validate_domain,
+        "wildcard": validate_domain,
+        "ip": validate_ip,
+        "cidr": validate_cidr,
+        "url": validate_url,
+        "api": validate_url,
+    }
+    validator = validators.get(asset_type)
+    if validator:
+        return validator(value)
+    return None
+
+
+def validate_cvss_vector(vector: str) -> str | None:
+    """
+    Validate a CVSS v3.x vector string format.
+    Returns error message or None if valid.
+    Example valid: CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N
+    """
+    if not vector:
+        return None
+    pattern = r'^CVSS:3\.[01]/AV:[NALP]/AC:[LH]/PR:[NLH]/UI:[NR]/S:[UC]/C:[NLH]/I:[NLH]/A:[NLH]$'
+    if not re.match(pattern, vector):
+        return (f"Invalid CVSS v3 vector format. Expected: "
+                f"CVSS:3.1/AV:_/AC:_/PR:_/UI:_/S:_/C:_/I:_/A:_")
+    return None
+
+
+def normalize_cwe(cwe_input: str) -> str:
+    """
+    Normalize CWE references to consistent format: CWE-<number>.
+    Accepts: 'CWE-79', 'cwe-79', 'CWE79', '79'
+    Returns: 'CWE-79'
+    """
+    if not cwe_input:
+        return cwe_input
+    cwe_input = cwe_input.strip().upper()
+    # Strip 'CWE-' or 'CWE' prefix to get the number
+    cleaned = re.sub(r'^CWE-?', '', cwe_input)
+    try:
+        num = int(cleaned)
+        return f"CWE-{num}"
+    except ValueError:
+        return cwe_input  # Return as-is if can't parse

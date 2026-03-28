@@ -71,6 +71,7 @@ def ingest_directory(dirpath: str, project_id: int,
         raise NotADirectoryError(f"Not a directory: {dirpath}")
 
     results = []
+    eligible = []
     for root, _dirs, files in os.walk(dirpath):
         for fname in sorted(files):
             fpath = os.path.join(root, fname)
@@ -88,25 +89,30 @@ def ingest_directory(dirpath: str, project_id: int,
             tool = detect_tool(filepath=fpath)
             if not tool:
                 continue
+            eligible.append((fpath, tool))
 
-            try:
-                result = ingest_file(fpath, project_id, tool_hint=tool,
-                                     dry_run=dry_run, enrich=enrich,
-                                     min_severity=min_severity,
-                                     scope_check=scope_check, db_path=db_path)
-                results.append(result)
-            except Exception as e:
-                results.append({
-                    "tool": tool or "unknown",
-                    "file": fpath,
-                    "total_parsed": 0,
-                    "new": 0,
-                    "duplicates": 0,
-                    "skipped": 0,
-                    "created_ids": [],
-                    "findings": [],
-                    "error": str(e),
-                })
+    total = len(eligible)
+    for idx, (fpath, tool) in enumerate(eligible, 1):
+        print(f"  [{idx}/{total}] Ingesting {os.path.basename(fpath)} ({tool})...",
+              file=__import__('sys').stderr, flush=True)
+        try:
+            result = ingest_file(fpath, project_id, tool_hint=tool,
+                                 dry_run=dry_run, enrich=enrich,
+                                 min_severity=min_severity,
+                                 scope_check=scope_check, db_path=db_path)
+            results.append(result)
+        except Exception as e:
+            results.append({
+                "tool": tool or "unknown",
+                "file": fpath,
+                "total_parsed": 0,
+                "new": 0,
+                "duplicates": 0,
+                "skipped": 0,
+                "created_ids": [],
+                "findings": [],
+                "error": str(e),
+            })
 
     return results
 
@@ -175,13 +181,14 @@ def ingest_data(data: str, project_id: int, tool_hint: str = None,
 
     # Step 6: Create draft vulns (unless dry_run)
     created_ids = []
+    create_errors = []
     if not dry_run:
         for f in findings:
             try:
                 vid = _create_draft_vuln(f, project_id, db_path)
                 created_ids.append(vid)
-            except Exception:
-                pass  # skip individual failures
+            except Exception as e:
+                create_errors.append(f"{f.get('title', 'Untitled')[:50]}: {e}")
 
     skipped = total_parsed - len(findings) - dup_count - out_of_scope_count
 
@@ -194,6 +201,7 @@ def ingest_data(data: str, project_id: int, tool_hint: str = None,
         "out_of_scope": out_of_scope_count,
         "skipped": max(0, skipped),
         "created_ids": created_ids,
+        "create_errors": create_errors,
         "findings": findings if dry_run else [],
     }
 

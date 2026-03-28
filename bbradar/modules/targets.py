@@ -6,10 +6,18 @@ Handles assets (domains, IPs, URLs, APIs, etc.) associated with projects.
 
 from ..core.database import get_connection
 from ..core.audit import log_action
-from ..core.utils import timestamp_now
+from ..core.utils import timestamp_now, validate_target_value
 
 VALID_ASSET_TYPES = {"domain", "ip", "url", "mobile_app", "api", "wildcard", "cidr", "other"}
 VALID_TIERS = {"critical", "high", "medium", "low"}
+
+
+def _normalize_value(value: str, asset_type: str) -> str:
+    """Normalize a target value: strip whitespace, lowercase domains/URLs."""
+    value = value.strip()
+    if asset_type in ("domain", "url", "wildcard", "api"):
+        value = value.lower()
+    return value
 
 
 def add_target(project_id: int, asset_type: str, value: str,
@@ -20,6 +28,12 @@ def add_target(project_id: int, asset_type: str, value: str,
         raise ValueError(f"Invalid asset_type '{asset_type}'. Must be one of: {VALID_ASSET_TYPES}")
     if tier and tier not in VALID_TIERS:
         raise ValueError(f"Invalid tier '{tier}'. Must be one of: {VALID_TIERS}")
+    value = _normalize_value(value, asset_type)
+    # Validate target value format
+    validation_error = validate_target_value(value, asset_type)
+    if validation_error:
+        import sys
+        print(f"  ⚠ Warning: {validation_error}", file=sys.stderr)
     with get_connection(db_path) as conn:
         cursor = conn.execute(
             """INSERT INTO targets (project_id, asset_type, value, in_scope, tier, notes)
@@ -35,25 +49,38 @@ def add_target(project_id: int, asset_type: str, value: str,
 def bulk_add_targets(project_id: int, asset_type: str, values: list[str],
                      in_scope: bool = True, db_path=None) -> int:
     """Add multiple targets at once. Returns count of inserted targets."""
-    count = 0
+    added = 0
+    skipped = 0
+    errors = []
     with get_connection(db_path) as conn:
         for val in values:
-            val = val.strip()
+            val = _normalize_value(val, asset_type)
             if not val:
                 continue
             try:
-                conn.execute(
+                result = conn.execute(
                     """INSERT OR IGNORE INTO targets (project_id, asset_type, value, in_scope)
                        VALUES (?, ?, ?, ?)""",
                     (project_id, asset_type, val, 1 if in_scope else 0),
                 )
-                count += 1
+                if result.rowcount > 0:
+                    added += 1
+                else:
+                    skipped += 1
             except Exception as e:
-                import sys
-                print(f"  warning: skipped '{val}': {e}", file=sys.stderr)
+                errors.append(f"{val}: {e}")
     log_action("bulk_created", "target", None,
-               {"project_id": project_id, "asset_type": asset_type, "count": count}, db_path)
-    return count
+               {"project_id": project_id, "asset_type": asset_type,
+                "added": added, "skipped": skipped, "errors": len(errors)}, db_path)
+    if errors:
+        import sys
+        print(f"  ⚠ {len(errors)} target(s) failed:", file=sys.stderr)
+        for err in errors[:10]:
+            print(f"    {err}", file=sys.stderr)
+    if skipped:
+        import sys
+        print(f"  ℹ {skipped} duplicate(s) skipped", file=sys.stderr)
+    return added
 
 
 def list_targets(project_id: int, asset_type: str = None, in_scope: bool = None,

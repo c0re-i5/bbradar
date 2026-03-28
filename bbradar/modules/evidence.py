@@ -22,6 +22,16 @@ def get_evidence_dir() -> Path:
     return Path(cfg.get("evidence_dir", str(Path.home() / ".bbradar" / "evidence")))
 
 
+def _is_safe_path(filepath: Path, base_dir: Path) -> bool:
+    """Check that resolved path is within base_dir (no symlink escapes)."""
+    try:
+        resolved = filepath.resolve()
+        base_resolved = base_dir.resolve()
+        return str(resolved).startswith(str(base_resolved) + os.sep) or resolved == base_resolved
+    except (OSError, ValueError):
+        return False
+
+
 def list_evidence_files() -> list[dict]:
     """List all files in the evidence directory with sizes."""
     ev_dir = get_evidence_dir()
@@ -29,7 +39,7 @@ def list_evidence_files() -> list[dict]:
         return []
     files = []
     for f in ev_dir.rglob("*"):
-        if f.is_file():
+        if f.is_file() and _is_safe_path(f, ev_dir):
             files.append({
                 "path": str(f),
                 "relative": str(f.relative_to(ev_dir)),
@@ -80,12 +90,16 @@ def find_orphaned_files(db_path=None) -> list[dict]:
 def cleanup_orphans(dry_run: bool = True, db_path=None) -> dict:
     """Remove orphaned evidence files. Returns summary."""
     orphans = find_orphaned_files(db_path)
+    ev_dir = get_evidence_dir()
     total_size = sum(o["size"] for o in orphans)
     removed = 0
 
     if not dry_run:
         for o in orphans:
             try:
+                fpath = Path(o["path"])
+                if not _is_safe_path(fpath, ev_dir):
+                    continue
                 os.remove(o["path"])
                 removed += 1
             except OSError:

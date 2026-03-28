@@ -6,6 +6,7 @@ using mocked HTTP calls and subprocess calls.
 """
 
 from unittest.mock import patch, MagicMock, call
+from urllib.error import HTTPError
 import json
 
 import pytest
@@ -277,3 +278,122 @@ class TestNotifyDispatch:
     def test_empty_programs_skips(self):
         out = notifier.notify_new_programs([])
         assert out["count"] == 0
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Tests: Webhook URL validation
+# ═══════════════════════════════════════════════════════════════════
+
+class TestWebhookValidation:
+    def test_valid_url(self):
+        assert notifier.validate_webhook_url(
+            "https://discord.com/api/webhooks/12345/abcdef"
+        ) is None
+
+    def test_empty_url(self):
+        assert notifier.validate_webhook_url("") is not None
+
+    def test_http_rejected(self):
+        err = notifier.validate_webhook_url("http://discord.com/api/webhooks/12345/abc")
+        assert "HTTPS" in err
+
+    def test_non_discord_host(self):
+        err = notifier.validate_webhook_url("https://evil.com/api/webhooks/12345/abc")
+        assert "discord.com" in err
+
+    def test_wrong_path(self):
+        err = notifier.validate_webhook_url("https://discord.com/not-webhooks/12345/abc")
+        assert "webhooks" in err.lower()
+
+
+class TestMaskWebhookUrl:
+    def test_masks_token(self):
+        url = "https://discord.com/api/webhooks/12345/abcdefghijklmnop"
+        masked = notifier.mask_webhook_url(url)
+        assert "abcdefghijklmnop" not in masked
+        assert "abcd" in masked
+        assert "mnop" in masked
+
+    def test_empty_url(self):
+        assert "not set" in notifier.mask_webhook_url("")
+
+    def test_none_url(self):
+        assert "not set" in notifier.mask_webhook_url(None)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Tests: Embed sanitization
+# ═══════════════════════════════════════════════════════════════════
+
+class TestSanitizeEmbeds:
+    def test_truncates_long_field_value(self):
+        embed = {
+            "title": "Test",
+            "fields": [{"name": "Big", "value": "x" * 2000, "inline": False}],
+        }
+        result = notifier._sanitize_embeds([embed])
+        assert len(result[0]["fields"][0]["value"]) <= notifier._EMBED_FIELD_VALUE_MAX
+
+    def test_truncates_long_description(self):
+        embed = {"title": "T", "description": "d" * 5000}
+        result = notifier._sanitize_embeds([embed])
+        assert len(result[0]["description"]) <= notifier._EMBED_DESC_MAX
+
+    def test_truncates_long_title(self):
+        embed = {"title": "T" * 300}
+        result = notifier._sanitize_embeds([embed])
+        assert len(result[0]["title"]) <= notifier._EMBED_TITLE_MAX
+
+    def test_short_embed_unchanged(self):
+        embed = {"title": "OK", "description": "Fine", "fields": []}
+        result = notifier._sanitize_embeds([embed])
+        assert result[0] == embed
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Tests: Rate limit handling
+# ═══════════════════════════════════════════════════════════════════
+
+class TestRateLimitRetry:
+    @patch("bbradar.modules.notifier.time.sleep")
+    @patch("bbradar.modules.notifier.urlopen")
+    @patch("bbradar.modules.notifier._get_discord_webhook",
+           return_value="https://discord.com/api/webhooks/test/ok")
+    def test_retries_on_429(self, _, mock_urlopen, mock_sleep):
+        # First call: 429, second call: success
+        err_response = MagicMock()
+        err_response.code = 429
+        err_response.headers = {"Retry-After": "1"}
+        err_response.read.return_value = b""
+        rate_err = HTTPError("url", 429, "Rate Limited", err_response.headers, None)
+
+        ok_response = MagicMock()
+        ok_response.status = 204
+        ok_response.__enter__ = MagicMock(return_value=ok_response)
+        ok_response.__exit__ = MagicMock(return_value=False)
+
+        mock_urlopen.side_effect = [rate_err, ok_response]
+        assert notifier._send_discord("test") is True
+        mock_sleep.assert_called_once()
+
+    @patch("bbradar.modules.notifier.urlopen")
+    @patch("bbradar.modules.notifier._get_discord_webhook",
+           return_value="https://discord.com/api/webhooks/test/ok")
+    def test_returns_false_on_persistent_error(self, _, mock_urlopen):
+        err = HTTPError("url", 403, "Forbidden", {}, None)
+        err.read = MagicMock(return_value=b"forbidden")
+        mock_urlopen.side_effect = err
+        assert notifier._send_discord("test") is False
+
+
+class TestConfigureDiscordValidation:
+    @patch("bbradar.modules.notifier.set_config_value")
+    def test_valid_url_saved(self, mock_set):
+        result = notifier.configure_discord("https://discord.com/api/webhooks/123/abc")
+        assert result is None
+        mock_set.assert_called_once()
+
+    def test_invalid_url_rejected(self):
+        result = notifier.configure_discord("http://evil.com/steal")
+        assert result is not None
+        assert isinstance(result, str)

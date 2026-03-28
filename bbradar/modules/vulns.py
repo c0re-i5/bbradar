@@ -10,7 +10,7 @@ from pathlib import Path
 
 from ..core.database import get_connection
 from ..core.audit import log_action
-from ..core.utils import timestamp_now
+from ..core.utils import timestamp_now, validate_cvss_vector, normalize_cwe
 
 VALID_SEVERITIES = {"critical", "high", "medium", "low", "informational"}
 VALID_STATUSES = {"new", "confirmed", "reported", "accepted", "duplicate", "resolved", "wontfix"}
@@ -49,6 +49,13 @@ def create_vuln(project_id: int, title: str, severity: str = "medium",
         raise ValueError(f"Invalid severity '{severity}'. Valid: {VALID_SEVERITIES}")
     if vuln_type and vuln_type not in VALID_VULN_TYPES:
         raise ValueError(f"Invalid vuln_type '{vuln_type}'. Valid: {VALID_VULN_TYPES}")
+
+    # Validate CVSS vector if provided
+    if cvss_vector:
+        cvss_error = validate_cvss_vector(cvss_vector)
+        if cvss_error:
+            import sys
+            print(f"  ⚠ Warning: {cvss_error}", file=sys.stderr)
 
     evidence_json = json.dumps(evidence) if evidence else None
 

@@ -101,15 +101,25 @@ def _api_request(endpoint, params=None, credentials=None):
     except HTTPError as e:
         if e.code == 401:
             raise ValueError(
-                "Authentication failed. Check your HackerOne credentials."
+                "Authentication failed (HTTP 401). Check your HackerOne credentials.\n"
+                "  Verify with: bb h1 status\n"
+                "  Reconfigure: bb h1 auth"
             ) from None
         if e.code == 403:
             raise ValueError(
-                "Access forbidden. Your API token may lack required permissions."
+                "Access forbidden (HTTP 403). Your API token may lack the required permissions.\n"
+                "  Generate a new token at: https://hackerone.com/settings/api_token\n"
+                "  Required scopes: read (for programs, reports, earnings)"
+            ) from None
+        if e.code == 404:
+            raise ValueError(
+                f"Resource not found (HTTP 404). Check the program handle or report ID.\n"
+                f"  Endpoint: {endpoint}"
             ) from None
         if e.code == 429:
             raise ValueError(
-                "Rate limited. Wait a moment and try again."
+                "Rate limited by HackerOne (HTTP 429). Wait a minute and try again.\n"
+                "  H1 limit: 600 requests/minute"
             ) from None
         body = ""
         try:
@@ -132,6 +142,10 @@ def _paginate(endpoint, params=None, max_pages=10):
 
     while page <= max_pages:
         params["page[number]"] = str(page)
+        if page > 1:
+            import sys
+            print(f"  Fetching page {page}... ({len(all_data)} items so far)",
+                  file=sys.stderr, flush=True)
         result = _api_request(endpoint, params)
         data = result.get("data", [])
         if not data:
@@ -358,12 +372,17 @@ def get_program(handle: str) -> dict:
             "max_severity": s_attrs.get("max_severity", ""),
         })
 
+    # Derive offers_bounties from API flag OR any scope eligible for bounty
+    offers_bounties = attrs.get("offers_bounties", False)
+    if not offers_bounties and any(s["eligible_for_bounty"] for s in scopes):
+        offers_bounties = True
+
     return {
         "id": item.get("id"),
         "handle": attrs.get("handle", ""),
         "name": attrs.get("name", "") or attrs.get("handle", handle),
         "url": f"https://hackerone.com/{attrs.get('handle', '')}",
-        "offers_bounties": attrs.get("offers_bounties", False),
+        "offers_bounties": offers_bounties,
         "policy": attrs.get("policy", ""),
         "state": attrs.get("state", ""),
         "scopes": scopes,

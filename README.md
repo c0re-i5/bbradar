@@ -39,7 +39,7 @@ evidence, and reports in one place.
 - **Single-user** — designed for individual researchers, no server or accounts
 - **CLI-native** — works entirely from the terminal via the `bb` command
 - **Tool-agnostic** — ingest output from 15+ security tools automatically
-- **Knowledge-backed** — built-in CWE, CAPEC, VRT, and Nuclei template databases
+- **Knowledge-backed** — built-in CWE, CAPEC, VRT, Nuclei, CVE, KEV, and EPSS databases
 
 ## Installation
 
@@ -90,7 +90,7 @@ bb use 1
 bb wizard vuln
 
 # 5. Generate a report
-bb report generate --project 1 --format markdown
+bb report full --format markdown
 ```
 
 ### HackerOne workflow
@@ -111,8 +111,8 @@ bb use 1
 bb target add 1 acme.com --type domain
 bb scope add 1 "*.acme.com"
 bb recon run subfinder 1
-bb vuln create 1 "SQL Injection in /api/users" --severity critical
-bb report generate --project 1
+bb vuln create "SQL Injection in /api/users" --severity critical
+bb report full 1
 ```
 
 ### Piping & scripting
@@ -171,24 +171,33 @@ Automatically parse output from security tools and create structured findings:
 
 ```bash
 # Ingest a single scan
-bb ingest --project 1 --tool nmap --file scan.xml
+bb ingest file scan.xml 1 --tool nmap
 
 # Auto-detect the tool format
-bb ingest --project 1 --file scan_output.json
+bb ingest file scan_output.json 1
 ```
 
 ### Knowledge Base
-Four integrated security databases, synced and searchable locally:
+Seven integrated security databases, synced and searchable locally:
 
 - **CWE** — MITRE Common Weakness Enumeration
 - **CAPEC** — MITRE Common Attack Pattern Enumeration
 - **VRT** — Bugcrowd Vulnerability Rating Taxonomy
 - **Nuclei** — ProjectDiscovery Nuclei Templates
+- **CVE** — NIST National Vulnerability Database (NVD API 2.0)
+- **KEV** — CISA Known Exploited Vulnerabilities catalog
+- **EPSS** — FIRST.org Exploit Prediction Scoring System
 
 ```bash
-bb kb sync          # Download / update all databases
-bb kb search xss    # Search across all sources
-bb kb stats         # Show database statistics
+bb kb sync              # Download / update all databases
+bb kb sync -s cve       # Sync only CVE data from NVD
+bb kb search xss        # Search across all sources
+bb kb cve CVE-2024-1234 # Full CVE detail: CVSS, KEV status, EPSS score
+bb kb kev               # Browse recently added exploited vulnerabilities
+bb kb kev --search log4j # Search KEV by vendor, product, or CVE
+bb kb cwe 79            # Look up CWE details
+bb kb enrich 42         # Enrich finding #42 with KB data + CVE intel
+bb kb status            # Show sync status and record counts
 ```
 
 ### Workflows
@@ -230,20 +239,24 @@ bb h1 programs --state public_mode  # Filter by state
 bb h1 programs --refresh            # Force re-fetch from H1 API
 bb h1 search "ecommerce"            # Discover programs (API search)
 bb h1 import <handle>               # Import program → project + targets + scope
-bb h1 scope-sync <project_id> <handle>  # Sync scope updates
+bb h1 scope-sync                    # Sync scope updates (uses active project)
+bb h1 scope-sync <project_id> <handle>  # ...or specify explicitly
 bb h1 reports                       # List your submitted reports
 bb h1 balance                       # Current balance
 bb h1 earnings                      # Earnings summary
-bb h1 watch <handle>                # Watch a program for scope changes
-bb h1 unwatch <handle>              # Stop watching a program
+bb h1 watch                         # Watch active project's H1 program for scope changes
+bb h1 watch <handle>                # ...or specify a handle
+bb h1 unwatch                       # Stop watching (active project)
 bb h1 watchlist                     # List all watched programs
 bb h1 check                         # Check all watched programs for changes
 bb h1 check <handle>                # Check a specific program
 bb h1 check --new-programs          # Find newly launched H1 programs
 bb h1 check --auto-import           # Auto-import new scope into linked projects
-bb h1 intel <handle>                # Program intel: disclosures, bounties, CWEs
+bb h1 intel                         # Program intel (uses active project's H1 handle)
+bb h1 intel <handle>                # ...or specify a handle
 bb h1 intel <handle> --refresh      # Force re-fetch (12h cache)
-bb h1 weaknesses <handle>           # List accepted weakness/CWE types
+bb h1 weaknesses                    # Accepted weakness/CWE types (active project)
+bb h1 weaknesses <handle>           # ...or specify a handle
 bb h1 notify discord <webhook_url>  # Configure Discord alerts (default)
 bb h1 notify discord-scope <url>    # Scope changes → dedicated channel
 bb h1 notify discord-programs <url> # New programs → dedicated channel
@@ -294,13 +307,21 @@ export BBRADAR_H1_API_TOKEN="your_api_token"
 
 ### Active Project Context
 
-Avoid typing the project ID on every command:
+Set an active project once, then every project-scoped command uses it
+automatically — no more typing IDs:
 
 ```bash
 bb use 3                # Set project 3 as active
 bb use                  # Show current active project
 bb target list          # Automatically uses project 3
-bb target add example.com --type domain   # Same — no ID needed
+bb target add example.com --type domain
+bb scope list           # No project ID needed
+bb scope add "*.acme.com"
+bb ingest file scan.xml
+bb report full
+bb h1 intel             # Uses project's linked H1 handle
+bb h1 watch             # Watch the linked H1 program
+bb h1 scope-sync        # Sync scope from H1
 bb use --clear          # Clear the active project
 ```
 
@@ -359,7 +380,7 @@ bb db status                # Show DB version and migration state
 | `bb workflow` | Run assessment workflows (list, run, preflight) |
 | `bb wizard` | Interactive wizards (project, target, vuln, quick) |
 | `bb templates` | Browse / search vulnerability templates |
-| `bb kb` | Knowledge base (sync, search, stats) |
+| `bb kb` | Knowledge base (sync, search, cve, kev, enrich, stats) |
 | `bb h1` | HackerOne API (auth, programs, import, reports, earnings) |
 | `bb dashboard` | Combined BBRadar + HackerOne dashboard |
 | `bb config` | View / edit configuration |
@@ -405,7 +426,7 @@ bbradar/
 │   ├── ingest.py       # Tool output ingestion router
 │   ├── workflows.py    # Workflow engine
 │   ├── wizards.py      # Interactive wizards
-│   ├── kb.py           # Knowledge base sync + search
+│   ├── kb.py           # Knowledge base sync + search (CWE, CAPEC, VRT, Nuclei, CVE, KEV, EPSS)
 │   └── parsers/        # 15 tool-specific output parsers
 ├── templates/           # Vulnerability templates (reserved)
 └── workflows/           # Workflow definitions (YAML)

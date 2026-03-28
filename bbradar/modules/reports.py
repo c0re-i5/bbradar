@@ -228,14 +228,18 @@ def _render_single_vuln_md(vuln: dict, project: dict, cfg: dict) -> str:
         ])
 
     if vuln.get("response"):
+        response_text = vuln["response"]
+        truncated = len(response_text) > 2000
         lines.extend([
             "## HTTP Response (Excerpt)",
             "",
             "```http",
-            vuln["response"][:2000],
+            response_text[:2000],
             "```",
-            "",
         ])
+        if truncated:
+            lines.append(f"\n> **Note:** Response truncated ({len(response_text):,} chars total, showing first 2,000)")
+        lines.append("")
 
     if vuln.get("evidence"):
         evidence = json.loads(vuln["evidence"]) if isinstance(vuln["evidence"], str) else vuln["evidence"]

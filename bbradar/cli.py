@@ -192,8 +192,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp = p_vuln.add_subparsers(dest="subcmd")
 
     p = sp.add_parser("create", help="Create a finding")
-    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("project_id", nargs="?", type=int, help="Project ID (uses active project if omitted)")
     p.add_argument("title", help="Vulnerability title")
+    p.add_argument("--project", "-p", type=int, dest="project", help="Project ID")
     p.add_argument("--severity", "-s", default="medium", help="Severity (critical/high/medium/low/informational)")
     p.add_argument("--type", "-t", help="Vuln type (xss/sqli/ssrf/...)")
     p.add_argument("--target", type=int, help="Target ID")
@@ -242,7 +243,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sp.add_parser("quick", help="Quick-log a vuln from a template")
     p.add_argument("template_key", help="Template key (e.g. xss-reflected)")
-    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("project_id", nargs="?", type=int, default=None, help="Project ID (default: active project)")
     p.add_argument("endpoint", help="Affected endpoint")
     p.add_argument("--param", help="Vulnerable parameter")
     p.add_argument("--target", help="Target name / domain")
@@ -305,12 +306,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", "-o", help="Output file path")
 
     p = sp.add_parser("full", help="Generate full project report")
-    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("project_id", nargs="?", type=int, default=None, help="Project ID (default: active project)")
     p.add_argument("--format", "-f", choices=["markdown", "html", "pdf"], default="markdown")
     p.add_argument("--output", "-o", help="Output file path")
 
     p = sp.add_parser("executive", help="Generate executive summary")
-    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("project_id", nargs="?", type=int, default=None, help="Project ID (default: active project)")
     p.add_argument("--format", "-f", choices=["markdown", "html", "pdf"], default="markdown")
     p.add_argument("--output", "-o", help="Output file path")
 
@@ -343,7 +344,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_scope = p_scope.add_subparsers(dest="subcmd")
 
     p = sp_scope.add_parser("add", help="Add an in-scope rule")
-    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("project_id", nargs="?", type=int, default=None, help="Project ID (default: active project)")
     p.add_argument("pattern", help="Scope pattern (e.g. *.example.com, 10.0.0.0/24, !admin.example.com)")
     p.add_argument("--type", "-t", choices=["include", "exclude"], default="include",
                    help="Rule type (default: include)")
@@ -355,38 +356,38 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--notes", "-n", help="Notes")
 
     p = sp_scope.add_parser("exclude", help="Add an exclusion rule (shortcut)")
-    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("project_id", nargs="?", type=int, default=None, help="Project ID (default: active project)")
     p.add_argument("pattern", help="Pattern to exclude")
     p.add_argument("--priority", type=int, default=0, help="Priority")
     p.add_argument("--notes", "-n", help="Notes")
 
     p = sp_scope.add_parser("list", help="List all scope rules")
-    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("project_id", nargs="?", type=int, default=None, help="Project ID (default: active project)")
 
     p = sp_scope.add_parser("delete", help="Delete a scope rule")
     p.add_argument("rule_id", type=int, help="Rule ID")
 
     p = sp_scope.add_parser("clear", help="Remove all scope rules for a project")
-    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("project_id", nargs="?", type=int, default=None, help="Project ID (default: active project)")
 
     p = sp_scope.add_parser("check", help="Check if a value is in scope")
-    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("project_id", nargs="?", type=int, default=None, help="Project ID (default: active project)")
     p.add_argument("value", help="Value to check (domain, IP, URL)")
 
     p = sp_scope.add_parser("check-file", help="Check all values in a file against scope")
-    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("project_id", nargs="?", type=int, default=None, help="Project ID (default: active project)")
     p.add_argument("file", help="File with one value per line")
 
     p = sp_scope.add_parser("import", help="Import scope rules from file (text, H1 JSON, Bugcrowd JSON)")
-    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("project_id", nargs="?", type=int, default=None, help="Project ID (default: active project)")
     p.add_argument("file", help="Scope file to import")
 
     p = sp_scope.add_parser("validate", help="Validate targets against scope rules")
-    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("project_id", nargs="?", type=int, default=None, help="Project ID (default: active project)")
     p.add_argument("--fix", action="store_true", help="Auto-fix target in_scope flags")
 
     p = sp_scope.add_parser("overview", help="Show scope overview for a project")
-    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("project_id", nargs="?", type=int, default=None, help="Project ID (default: active project)")
 
     sp_scope.add_parser("wizard", help="Interactive scope definition wizard")
 
@@ -396,7 +397,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sp_ing.add_parser("file", help="Ingest a single tool output file")
     p.add_argument("filepath", help="Path to tool output file")
-    p.add_argument("project_id", type=int, help="Project ID to ingest into")
+    p.add_argument("project_id", nargs="?", type=int, default=None, help="Project ID to ingest into (default: active project)")
     p.add_argument("--tool", "-t", help="Tool name (auto-detected if omitted)")
     p.add_argument("--dry-run", action="store_true", help="Parse and show results without creating vulns")
     p.add_argument("--no-enrich", action="store_true", help="Skip KB enrichment")
@@ -408,7 +409,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sp_ing.add_parser("dir", help="Ingest all tool outputs from a directory")
     p.add_argument("dirpath", help="Directory containing tool output files")
-    p.add_argument("project_id", type=int, help="Project ID to ingest into")
+    p.add_argument("project_id", nargs="?", type=int, default=None, help="Project ID to ingest into (default: active project)")
     p.add_argument("--dry-run", action="store_true", help="Parse and show results without creating vulns")
     p.add_argument("--no-enrich", action="store_true", help="Skip KB enrichment")
     p.add_argument("--min-severity", default="informational",
@@ -418,7 +419,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Filter findings against project scope rules")
 
     p = sp_ing.add_parser("pipe", help="Ingest tool output from stdin")
-    p.add_argument("project_id", type=int, help="Project ID to ingest into")
+    p.add_argument("project_id", nargs="?", type=int, default=None, help="Project ID to ingest into (default: active project)")
     p.add_argument("--tool", "-t", required=True, help="Tool name (required for stdin)")
     p.add_argument("--dry-run", action="store_true", help="Parse and show results without creating vulns")
     p.add_argument("--no-enrich", action="store_true", help="Skip KB enrichment")
@@ -431,14 +432,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp_ing.add_parser("tools", help="List supported tools / parsers")
 
     p = sp_ing.add_parser("summary", help="Show ingest summary for a project")
-    p.add_argument("project_id", type=int, help="Project ID")
+    p.add_argument("project_id", nargs="?", type=int, default=None, help="Project ID (default: active project)")
 
     # --- kb (knowledge base) ---
-    p_kb = sub.add_parser("kb", help="Knowledge base — CWE, CAPEC, VRT, Nuclei")
+    p_kb = sub.add_parser("kb", help="Knowledge base — CWE, CAPEC, VRT, Nuclei, CVE, KEV, EPSS")
     sp_kb = p_kb.add_subparsers(dest="subcmd")
 
     p = sp_kb.add_parser("sync", help="Download / update KB sources")
-    p.add_argument("--source", "-s", choices=["cwe", "capec", "vrt", "nuclei", "all"],
+    p.add_argument("--source", "-s",
+                   choices=["cwe", "capec", "vrt", "nuclei", "cve", "kev", "epss", "all"],
                    default="all", help="Source to sync (default: all)")
     p.add_argument("--force", "-f", action="store_true",
                    help="Force re-download even if recently synced")
@@ -463,6 +465,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cwe", help="Filter by CWE ID")
     p.add_argument("--tag", help="Filter by tag")
     p.add_argument("--limit", "-n", type=int, default=30, help="Max results")
+
+    p = sp_kb.add_parser("cve", help="Look up a CVE by ID (with KEV + EPSS data)")
+    p.add_argument("id", help="CVE ID (e.g. CVE-2024-1234)")
+
+    p = sp_kb.add_parser("kev", help="List recently added CISA KEV entries")
+    p.add_argument("--limit", "-n", type=int, default=20, help="Max results")
+    p.add_argument("--search", help="Search KEV entries")
 
     p = sp_kb.add_parser("enrich", help="Enrich a vulnerability with KB data")
     p.add_argument("vuln_id", type=int, help="Vulnerability ID to enrich")
@@ -573,8 +582,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("handle", help="HackerOne program handle (e.g. 'security')")
 
     p = sp_h1.add_parser("scope-sync", help="Sync scope from H1 into existing project")
-    p.add_argument("project_id", type=int, help="BBRadar project ID")
-    p.add_argument("handle", help="HackerOne program handle")
+    p.add_argument("project_id", nargs="?", type=int, default=None, help="BBRadar project ID (default: active project)")
+    p.add_argument("handle", nargs="?", default=None, help="HackerOne program handle (default: from project)")
 
     p = sp_h1.add_parser("reports", help="List your submitted reports")
     p.add_argument("--state", "-s", help="Filter by state (new, triaged, resolved, etc.)")
@@ -587,10 +596,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp_h1.add_parser("earnings", help="Show earnings summary")
 
     p = sp_h1.add_parser("watch", help="Watch a H1 program for scope changes")
-    p.add_argument("handle", help="HackerOne program handle")
+    p.add_argument("handle", nargs="?", default=None, help="HackerOne program handle (default: from active project)")
 
     p = sp_h1.add_parser("unwatch", help="Stop watching a program")
-    p.add_argument("handle", help="HackerOne program handle")
+    p.add_argument("handle", nargs="?", default=None, help="HackerOne program handle (default: from active project)")
 
     sp_h1.add_parser("watchlist", help="List all watched programs")
 
@@ -616,12 +625,12 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Only output if there are changes (for cron)")
 
     p = sp_h1.add_parser("intel", help="Program intelligence — hacktivity, bounties, top vulns")
-    p.add_argument("handle", help="HackerOne program handle")
+    p.add_argument("handle", nargs="?", default=None, help="HackerOne program handle (default: from active project)")
     p.add_argument("--refresh", action="store_true", default=False,
                    help="Force refresh from API (ignores cache)")
 
     p = sp_h1.add_parser("weaknesses", help="List accepted weakness types for a program")
-    p.add_argument("handle", help="HackerOne program handle")
+    p.add_argument("handle", nargs="?", default=None, help="HackerOne program handle (default: from active project)")
     p.add_argument("--refresh", action="store_true", default=False,
                    help="Force refresh from API")
 
@@ -649,6 +658,22 @@ def _resolve_project_id(args, attr="project_id"):
         return active
     print("❌ No project ID given and no active project set. Run 'bb use <id>' or pass a project ID.",
           file=sys.stderr)
+    sys.exit(1)
+
+
+def _resolve_h1_handle(args):
+    """Resolve HackerOne handle from args or active project's h1_handle."""
+    handle = getattr(args, "handle", None)
+    if handle:
+        return handle
+    active = get_active_project()
+    if active is not None:
+        p = projects.get_project(active)
+        if p and p.get("h1_handle"):
+            return p["h1_handle"]
+    print("❌ No HackerOne handle given and active project has no linked H1 program.",
+          file=sys.stderr)
+    print("  Use 'bb h1 import <handle>' or pass a handle argument.", file=sys.stderr)
     sys.exit(1)
 
 
@@ -742,11 +767,31 @@ def cmd_status(args):
     """Show workspace status."""
     cfg = load_config()
     try:
+        from .core.database import get_connection, get_schema_version, MIGRATIONS
         projs = projects.list_projects()
         active = [p for p in projs if p["status"] == "active"]
         all_vulns = vulns.list_vulns(limit=10000)
         vuln_stats = vulns.get_vuln_stats()
         active_pid = get_active_project()
+
+        # Get last activity from audit log
+        last_activity = None
+        try:
+            recent = get_audit_log(limit=1)
+            if recent:
+                last_activity = recent[0].get("timestamp")
+        except Exception:
+            pass
+
+        # Check pending migrations
+        pending_migrations = 0
+        try:
+            current_version = get_schema_version()
+            if MIGRATIONS:
+                latest = MIGRATIONS[-1][0]
+                pending_migrations = max(0, latest - current_version)
+        except Exception:
+            pass
 
         status_data = {
             "projects_total": len(projs),
@@ -754,6 +799,8 @@ def cmd_status(args):
             "vuln_stats": vuln_stats,
             "active_project": active_pid,
             "data_dir": cfg["data_dir"],
+            "last_activity": last_activity,
+            "pending_migrations": pending_migrations,
         }
         if _json_out(args, status_data):
             return
@@ -771,7 +818,11 @@ def cmd_status(args):
                 print(f"    {severity_color(sev)}: {count}")
         if vuln_stats.get("total_bounty"):
             print(f"  Bounties:  ${vuln_stats['total_bounty']:.2f}")
+        if last_activity:
+            print(f"  Last activity: {last_activity}")
         print(f"\n  Data dir:  {cfg['data_dir']}")
+        if pending_migrations:
+            print(f"\n  ⚠ {pending_migrations} pending migration(s). Run 'bb db migrate'.")
 
         if active:
             print("\n  Active Projects:")
@@ -990,8 +1041,9 @@ def cmd_recon(args):
 
 def cmd_vuln(args):
     if args.subcmd == "create":
+        pid = _resolve_project_id(args)
         vid = vulns.create_vuln(
-            project_id=args.project_id, title=args.title,
+            project_id=pid, title=args.title,
             severity=args.severity, vuln_type=args.type,
             target_id=args.target, description=args.description,
             impact=args.impact, reproduction=args.repro,
@@ -1002,8 +1054,9 @@ def cmd_vuln(args):
         print(f"✓ Created finding [{vid}] {args.title} ({args.severity.upper()})")
 
     elif args.subcmd == "list":
+        pid = getattr(args, "project", None) or get_active_project()
         data = vulns.list_vulns(
-            project_id=args.project, severity=args.severity,
+            project_id=pid, severity=args.severity,
             status=args.status, vuln_type=args.type,
         )
         if _json_out(args, data):
@@ -1076,9 +1129,10 @@ def cmd_vuln(args):
             print(f"  Total Bounty: ${s['total_bounty']:.2f}")
 
     elif args.subcmd == "quick":
+        pid = _resolve_project_id(args)
         vid = quick_vuln(
             template_key=args.template_key,
-            project_id=args.project_id,
+            project_id=pid,
             endpoint=args.endpoint,
             parameter=args.param or "",
             target=args.target or "",
@@ -1192,14 +1246,16 @@ def cmd_report(args):
         print(f"✓ Report generated: {path}")
 
     elif args.subcmd == "full":
+        pid = _resolve_project_id(args)
         path = reports.generate_full_report(
-            args.project_id, format=args.format, output_path=args.output,
+            pid, format=args.format, output_path=args.output,
         )
         print(f"✓ Report generated: {path}")
 
     elif args.subcmd == "executive":
+        pid = _resolve_project_id(args)
         path = reports.generate_executive_summary(
-            args.project_id, format=args.format, output_path=args.output,
+            pid, format=args.format, output_path=args.output,
         )
         print(f"✓ Report generated: {path}")
 
@@ -1277,6 +1333,17 @@ def cmd_kb(args):
             for r in results["nuclei"]:
                 sev = (r.get('severity') or '')[:8]
                 print(f"    {r['template_id'][:40]:40s} {sev:10s} {r['name'][:45]}")
+        if results.get("cve"):
+            print("\n  CVE:")
+            for r in results["cve"]:
+                score = r.get('cvss_v31_score') or ''
+                sev = r.get('cvss_v31_severity') or ''
+                desc = (r.get('description') or '')[:60]
+                print(f"    {r['cve_id']:18s} {str(score):5s} {sev:10s} {desc}")
+        if results.get("kev"):
+            print("\n  KEV (actively exploited):")
+            for r in results["kev"]:
+                print(f"    {r['cve_id']:18s} {r.get('vendor',''):15s} {r.get('product',''):15s} {r.get('name','')[:40]}")
         print()
 
     elif args.subcmd == "cwe":
@@ -1398,13 +1465,111 @@ def cmd_kb(args):
             print(f"\n  Related Nuclei Templates:")
             for n in enrichment["related_nuclei"][:5]:
                 print(f"    {n['template_id']} ({n.get('severity', 'N/A')})")
+        if enrichment.get("cve_details"):
+            print(f"\n  CVE Intelligence:")
+            for d in enrichment["cve_details"][:5]:
+                exploited = "⚠ ACTIVELY EXPLOITED" if d.get("actively_exploited") else ""
+                score = d.get('cvss_v31_score', 'N/A')
+                print(f"    {d['cve_id']}  CVSS: {score}  {exploited}")
+                if d.get("epss"):
+                    epss = d["epss"]
+                    pct = epss['epss_score'] * 100
+                    print(f"      EPSS: {pct:.1f}% exploitation probability (top {epss['percentile']*100:.0f}%)")
+        if enrichment.get("actively_exploited"):
+            print(f"\n  ⚠  WARNING: This vulnerability is ACTIVELY EXPLOITED (CISA KEV)")
         print()
 
+    elif args.subcmd == "cve":
+        cve = knowledgebase.lookup_cve(args.id)
+        if not cve:
+            print(f"CVE '{args.id}' not found. Run 'bb kb sync --source cve' first.")
+            return
+        print(f"\n═══ {cve['cve_id']} ═══\n")
+        if cve.get('description'):
+            print(f"  Description:")
+            print(textwrap.indent(textwrap.fill(cve['description'], 72), '    '))
+        if cve.get('cvss_v31_score') is not None:
+            print(f"\n  CVSS v3.1:  {cve['cvss_v31_score']} ({cve.get('cvss_v31_severity', 'N/A')})")
+            if cve.get('cvss_v31_vector'):
+                print(f"  Vector:     {cve['cvss_v31_vector']}")
+        if cve.get('cwe_ids'):
+            print(f"\n  CWE IDs: {', '.join(cve['cwe_ids'])}")
+        if cve.get('published_at'):
+            print(f"  Published:  {cve['published_at'][:19].replace('T', ' ')}")
+        if cve.get('modified_at'):
+            print(f"  Modified:   {cve['modified_at'][:19].replace('T', ' ')}")
+        # KEV status
+        if cve.get('actively_exploited'):
+            kev = cve['kev']
+            print(f"\n  ⚠  CISA KEV — ACTIVELY EXPLOITED")
+            print(f"  Vendor:     {kev.get('vendor', '')}")
+            print(f"  Product:    {kev.get('product', '')}")
+            print(f"  Added:      {kev.get('date_added', '')}")
+            print(f"  Due date:   {kev.get('due_date', '')}")
+            if kev.get('required_action'):
+                print(f"  Action:     {kev['required_action'][:120]}")
+            if kev.get('known_ransomware') and kev['known_ransomware'].lower() != 'unknown':
+                print(f"  Ransomware: {kev['known_ransomware']}")
+        else:
+            print(f"\n  KEV Status: Not in CISA KEV catalog")
+        # EPSS
+        if cve.get('epss'):
+            epss = cve['epss']
+            pct = epss['epss_score'] * 100
+            print(f"\n  EPSS Score: {pct:.2f}% exploitation probability")
+            print(f"  Percentile: top {epss['percentile']*100:.0f}%")
+            if epss.get('score_date'):
+                print(f"  Score date: {epss['score_date']}")
+        # References
+        if cve.get('references'):
+            print(f"\n  References:")
+            for ref in cve['references'][:10]:
+                tags = ' '.join(f'[{t}]' for t in ref.get('tags', [])[:3])
+                print(f"    {ref['url'][:80]} {tags}")
+        # Affected products
+        if cve.get('affected_products'):
+            print(f"\n  Affected Products ({len(cve['affected_products'])}):")
+            for p in cve['affected_products'][:10]:
+                print(f"    {p}")
+        print()
+
+    elif args.subcmd == "kev":
+        with knowledgebase.get_connection() as conn:
+            if args.search:
+                q = f"%{args.search}%"
+                rows = conn.execute("""
+                    SELECT cve_id, vendor, product, name, date_added, known_ransomware
+                    FROM kb_kev
+                    WHERE cve_id LIKE ? OR vendor LIKE ? OR product LIKE ?
+                          OR name LIKE ? OR description LIKE ?
+                    ORDER BY date_added DESC LIMIT ?
+                """, (q, q, q, q, q, args.limit)).fetchall()
+            else:
+                rows = conn.execute("""
+                    SELECT cve_id, vendor, product, name, date_added, known_ransomware
+                    FROM kb_kev ORDER BY date_added DESC LIMIT ?
+                """, (args.limit,)).fetchall()
+
+        if not rows:
+            print("No KEV entries found. Run 'bb kb sync --source kev' first.")
+            return
+
+        print(f"\n═══ CISA KEV — Known Exploited Vulnerabilities ═══\n")
+        for r in rows:
+            ransomware = " 🔒" if r['known_ransomware'] and r['known_ransomware'].lower() not in ('unknown', '') else ""
+            print(f"  {r['date_added']}  {r['cve_id']:18s} {r['vendor']:15s} {r['product']:15s} {r['name'][:35]}{ransomware}")
+        total = conn.execute("SELECT COUNT(*) as c FROM kb_kev").fetchone()["c"]
+        print(f"\n  Showing {len(rows)} of {total} entries (--limit to change)")
+        print(f"  🔒 = used in ransomware campaigns")
+        print(f"  Use 'bb kb cve <CVE-ID>' for full details")
+
     else:
-        print("Usage: bb kb {sync|status|search|cwe|capec|vrt|nuclei|enrich}")
+        print("Usage: bb kb {sync|status|search|cwe|capec|vrt|nuclei|cve|kev|enrich}")
         print("\n  Sync the knowledge base first:  bb kb sync")
         print("  Then search or look up entries:  bb kb search xss")
         print("                                   bb kb cwe 79")
+        print("                                   bb kb cve CVE-2024-1234")
+        print("                                   bb kb kev")
 
 
 def cmd_ingest(args):
@@ -1412,8 +1577,9 @@ def cmd_ingest(args):
     from .modules.parsers import list_parsers as _lp
 
     if args.subcmd == "file":
+        pid = _resolve_project_id(args)
         result = ingest.ingest_file(
-            args.filepath, args.project_id,
+            args.filepath, pid,
             tool_hint=args.tool, dry_run=args.dry_run,
             enrich=not args.no_enrich, min_severity=args.min_severity,
             scope_check=args.scope_check,
@@ -1421,8 +1587,9 @@ def cmd_ingest(args):
         _print_ingest_result(result, args.dry_run)
 
     elif args.subcmd == "dir":
+        pid = _resolve_project_id(args)
         results = ingest.ingest_directory(
-            args.dirpath, args.project_id,
+            args.dirpath, pid,
             dry_run=args.dry_run, enrich=not args.no_enrich,
             min_severity=args.min_severity,
             scope_check=args.scope_check,
@@ -1446,8 +1613,9 @@ def cmd_ingest(args):
             print(f"  Vulns created:    {total_created}")
 
     elif args.subcmd == "pipe":
+        pid = _resolve_project_id(args)
         result = ingest.ingest_stdin(
-            args.project_id, tool_hint=args.tool,
+            pid, tool_hint=args.tool,
             dry_run=args.dry_run, enrich=not args.no_enrich,
             min_severity=args.min_severity,
             scope_check=args.scope_check,
@@ -1464,8 +1632,9 @@ def cmd_ingest(args):
         print(f"         bb ingest dir <directory> <project_id>")
 
     elif args.subcmd == "summary":
-        summary = ingest.get_ingest_summary(args.project_id)
-        print(f"\n═══ Ingest Summary (Project #{args.project_id}) ═══\n")
+        pid = _resolve_project_id(args)
+        summary = ingest.get_ingest_summary(pid)
+        print(f"\n═══ Ingest Summary (Project #{pid}) ═══\n")
         print(f"  Total findings: {summary['total']}")
         if summary["by_severity"]:
             print("\n  By Severity:")
@@ -1528,6 +1697,10 @@ def _print_ingest_result(result: dict, dry_run: bool, compact: bool = False):
 
     if not dry_run and created:
         print(f"  Created:    {len(created)} draft vulns (IDs: {', '.join(str(i) for i in created[:20])})")
+        if result.get("create_errors"):
+            print(f"  ⚠ Failed:   {len(result['create_errors'])} finding(s) could not be created:")
+            for err in result["create_errors"][:5]:
+                print(f"    {err}")
     elif dry_run and result.get("findings"):
         print(f"\n  --- Findings Preview ---")
         for f in result["findings"][:15]:
@@ -1542,6 +1715,7 @@ def _print_ingest_result(result: dict, dry_run: bool, compact: bool = False):
 def cmd_scope(args):
     """Manage scope rules."""
     if args.subcmd == "add":
+        pid = _resolve_project_id(args)
         # Auto-detect exclude from ! prefix
         pattern = args.pattern
         rule_type = args.type
@@ -1550,7 +1724,7 @@ def cmd_scope(args):
             rule_type = "exclude"
 
         rid = scope.add_rule(
-            args.project_id, pattern, rule_type=rule_type,
+            pid, pattern, rule_type=rule_type,
             pattern_type=args.pattern_type, asset_category=args.category,
             priority=args.priority, notes=args.notes,
         )
@@ -1558,18 +1732,20 @@ def cmd_scope(args):
         print(f"{icon} Added {rule_type} rule [{rid}]: {pattern}")
 
     elif args.subcmd == "exclude":
+        pid = _resolve_project_id(args)
         rid = scope.add_rule(
-            args.project_id, args.pattern, rule_type="exclude",
+            pid, args.pattern, rule_type="exclude",
             priority=args.priority, notes=args.notes,
         )
         print(f"✗ Added exclude rule [{rid}]: {args.pattern}")
 
     elif args.subcmd == "list":
-        rules = scope.list_rules(args.project_id)
+        pid = _resolve_project_id(args)
+        rules = scope.list_rules(pid)
         if not rules:
             print("No scope rules defined. Use 'bb scope add' or 'bb scope import'.")
             return
-        print(f"\n═══ Scope Rules (Project #{args.project_id}) ═══\n")
+        print(f"\n═══ Scope Rules (Project #{pid}) ═══\n")
         for r in rules:
             icon = "✓" if r["rule_type"] == "include" else "✗"
             ptype = r["pattern_type"][:4]
@@ -1590,22 +1766,39 @@ def cmd_scope(args):
         print(f"✓ Deleted rule #{args.rule_id}: {rule['rule_type']} {rule['pattern']}")
 
     elif args.subcmd == "clear":
-        if confirm(f"Remove ALL scope rules for project #{args.project_id}?"):
-            count = scope.clear_rules(args.project_id)
+        pid = _resolve_project_id(args)
+        if confirm(f"Remove ALL scope rules for project #{pid}?"):
+            count = scope.clear_rules(pid)
             print(f"✓ Removed {count} scope rules")
 
     elif args.subcmd == "check":
-        result = scope.check_scope(args.project_id, args.value)
+        pid = _resolve_project_id(args)
+        result = scope.check_scope(pid, args.value)
         if result["in_scope"] is None:
             print(f"  ? {args.value}  — {result['reason']}")
         elif result["in_scope"]:
             print(f"  ✓ IN SCOPE:  {args.value}")
-            print(f"    Reason: {result['reason']}")
+            matched = result.get("matched_rule")
+            if matched:
+                print(f"    Matched:  rule #{matched['id']} — {matched['rule_type']} {matched['pattern_type']}: {matched['pattern']}")
+                if matched.get("notes"):
+                    print(f"    Notes:    {matched['notes']}")
+            else:
+                print(f"    Reason:   {result['reason']}")
         else:
             print(f"  ✗ OUT OF SCOPE:  {args.value}")
-            print(f"    Reason: {result['reason']}")
-        if result.get("all_matches"):
-            print(f"    Matching rules: {len(result['all_matches'])}")
+            matched = result.get("matched_rule")
+            if matched:
+                print(f"    Blocked:  rule #{matched['id']} — {matched['rule_type']} {matched['pattern_type']}: {matched['pattern']}")
+                if matched.get("notes"):
+                    print(f"    Notes:    {matched['notes']}")
+            else:
+                print(f"    Reason:   {result['reason']}")
+        if result.get("all_matches") and len(result["all_matches"]) > 1:
+            print(f"    All matching rules ({len(result['all_matches'])}):")
+            for m in result["all_matches"]:
+                icon = "✓" if m["rule_type"] == "include" else "✗"
+                print(f"      {icon} #{m['id']} {m['rule_type']:7s} {m['pattern']}  (priority {m['priority']})")
 
     elif args.subcmd == "check-file":
         from pathlib import Path
@@ -1613,9 +1806,10 @@ def cmd_scope(args):
         if not p.exists():
             print(f"File not found: {args.file}")
             return
+        pid = _resolve_project_id(args)
         values = [l.strip() for l in p.read_text().splitlines()
                   if l.strip() and not l.strip().startswith("#")]
-        results = scope.check_scope_batch(args.project_id, values)
+        results = scope.check_scope_batch(pid, values)
         in_count = 0
         out_count = 0
         unknown = 0
@@ -1633,16 +1827,22 @@ def cmd_scope(args):
         print(f"\n  Summary: {in_count} in-scope, {out_count} out-of-scope, {unknown} unknown")
 
     elif args.subcmd == "import":
-        result = scope.import_from_file(args.project_id, args.file)
+        pid = _resolve_project_id(args)
+        result = scope.import_from_file(pid, args.file)
         if result.get("error"):
             print(f"  ✗ Import error: {result['error']}")
         else:
             src = result.get("source", "text")
             print(f"✓ Imported {result.get('added', 0)} scope rules (format: {src})")
+            if result.get("skipped_count"):
+                print(f"  ⚠ {result['skipped_count']} line(s) could not be parsed:")
+                for line_num, line_text in result.get("skipped", [])[:5]:
+                    print(f"    line {line_num}: {line_text[:70]}")
 
     elif args.subcmd == "validate":
+        pid = _resolve_project_id(args)
         if args.fix:
-            result = scope.auto_scope_targets(args.project_id, dry_run=False)
+            result = scope.auto_scope_targets(pid, dry_run=False)
             print(f"\n═══ Scope Validation + Fix ═══\n")
             print(f"  Total targets: {result['total_targets']}")
             print(f"  Already correct: {result['correct']}")
@@ -1655,7 +1855,7 @@ def cmd_scope(args):
             if result["unmatched"]:
                 print(f"  Unmatched (no rule): {result['unmatched']}")
         else:
-            result = scope.validate_targets(args.project_id)
+            result = scope.validate_targets(pid)
             if result.get("message"):
                 print(f"  {result['message']}")
                 return
@@ -1670,7 +1870,7 @@ def cmd_scope(args):
                     exp = "in-scope" if m["expected"] else "out-of-scope"
                     print(f"    [{t['id']}] {t['value']}: currently {cur}, should be {exp}")
                     print(f"         Reason: {m['reason']}")
-                print(f"\n  Run 'bb scope validate {args.project_id} --fix' to auto-correct.")
+                print(f"\n  Run 'bb scope validate {pid} --fix' to auto-correct.")
             else:
                 print(f"  All targets match scope rules. ✓")
             if result["unmatched"]:
@@ -1679,8 +1879,9 @@ def cmd_scope(args):
                     print(f"    [{t['id']}] {t['value']}")
 
     elif args.subcmd == "overview":
-        ov = scope.scope_overview(args.project_id)
-        print(f"\n═══ Scope Overview (Project #{args.project_id}) ═══\n")
+        pid = _resolve_project_id(args)
+        ov = scope.scope_overview(pid)
+        print(f"\n═══ Scope Overview (Project #{pid}) ═══\n")
         print(f"  Rules: {ov['rules_total']} ({len(ov['includes'])} includes, {len(ov['excludes'])} excludes)")
         print(f"  Targets: {ov['targets_total']} ({ov['targets_in_scope']} in-scope, {ov['targets_out_scope']} out-of-scope)")
 
@@ -2189,8 +2390,10 @@ def cmd_h1(args):
         print(f"    bb recon run {result['project_id']}\n")
 
     elif args.subcmd == "scope-sync":
-        result = hackerone.sync_scope(args.project_id, args.handle)
-        print(f"\n  ✓ Scope synced from '{args.handle}'")
+        pid = _resolve_project_id(args)
+        handle = _resolve_h1_handle(args)
+        result = hackerone.sync_scope(pid, handle)
+        print(f"\n  ✓ Scope synced from '{handle}'")
         print(f"    New targets: {result['new_targets']}")
         print(f"    New rules:   {result['new_rules']}\n")
 
@@ -2245,7 +2448,8 @@ def cmd_h1(args):
         print()
 
     elif args.subcmd == "watch":
-        result = hackerone.watch_program(args.handle)
+        handle = _resolve_h1_handle(args)
+        result = hackerone.watch_program(handle)
         print(f"\n  ✓ Watching '{result['handle']}' ({result['name']})")
         print(f"    Scope snapshot: {result['scopes_snapshotted']} assets")
         if result['project_id']:
@@ -2253,8 +2457,9 @@ def cmd_h1(args):
         print(f"\n  Check for changes: bb h1 check {result['handle']}\n")
 
     elif args.subcmd == "unwatch":
-        hackerone.unwatch_program(args.handle)
-        print(f"\n  ✓ Stopped watching '{args.handle}'.\n")
+        handle = _resolve_h1_handle(args)
+        hackerone.unwatch_program(handle)
+        print(f"\n  ✓ Stopped watching '{handle}'.\n")
 
     elif args.subcmd == "watchlist":
         watched = hackerone.list_watched()
@@ -2327,13 +2532,16 @@ def cmd_h1(args):
             elif args.channel == "discord-programs":
                 event = "programs"
             if args.value:
-                notifier.configure_discord(args.value, event=event)
+                err = notifier.configure_discord(args.value, event=event)
+                if err:
+                    print(f"\n  ✗ Invalid webhook URL: {err}\n")
+                    return
                 ok = notifier.test_discord(event=event)
                 label = f" ({event})" if event else ""
                 if ok:
                     print(f"\n  ✓ Discord{label} webhook saved and verified! Test message sent.\n")
                 else:
-                    print(f"\n  ⚠ Webhook saved but test message failed. Check the URL.\n")
+                    print(f"\n  ⚠ Webhook saved but test message failed. Check the URL and channel permissions.\n")
             else:
                 status = notifier.get_status()
                 key = "discord" if not event else f"discord_{event}"
@@ -2363,25 +2571,32 @@ def cmd_h1(args):
                 print("\n  Usage: bb h1 notify desktop [on|off]\n")
 
         elif args.channel == "test":
-            print("\n  Testing notification channels...")
+            print("\n  Testing notification channels...\n")
             status = notifier.get_status()
+            any_configured = False
             for key, label in [("discord", "Discord (default)"),
                                ("discord_scope", "Discord (scope)"),
                                ("discord_programs", "Discord (programs)")]:
                 d = status[key]
                 if d['configured'] and not d.get('uses_default'):
+                    any_configured = True
                     event = None if key == "discord" else key.split("_", 1)[1]
                     ok = notifier.test_discord(event=event)
-                    print(f"    {label}: {'✓ sent' if ok else '✗ failed'}")
+                    url_display = notifier.mask_webhook_url(notifier._get_discord_webhook(event))
+                    print(f"    {label}: {'✓ sent' if ok else '✗ failed'} ({url_display})")
                 elif d['configured']:
                     print(f"    {label}: using default")
                 else:
                     print(f"    {label}: not configured")
             if status['desktop']['enabled']:
+                any_configured = True
                 ok = notifier.test_desktop()
                 print(f"    Desktop: {'✓ sent' if ok else '✗ failed (is notify-send installed?)'}")
             else:
                 print("    Desktop: disabled")
+            if not any_configured:
+                print("\n  No channels configured. Set one up with:")
+                print("    bb h1 notify discord <webhook_url>")
             print()
 
         else:  # status
@@ -2478,9 +2693,10 @@ def cmd_h1(args):
                 print(f"    Run: bb h1 notify discord <webhook_url>")
 
     elif args.subcmd == "intel":
+        handle = _resolve_h1_handle(args)
         if not getattr(args, "json", False):
-            print(f"\n  Fetching intel for '{args.handle}'...")
-        intel = hackerone.get_program_intel(args.handle, refresh=args.refresh)
+            print(f"\n  Fetching intel for '{handle}'...")
+        intel = hackerone.get_program_intel(handle, refresh=args.refresh)
         if _json_out(args, intel):
             return
         stats = intel["stats"]
@@ -2545,25 +2761,26 @@ def cmd_h1(args):
             if len(intel["weaknesses"]) > 15:
                 print(f"    ...and {len(intel['weaknesses']) - 15} more")
 
-        print(f"\n  Use 'bb h1 weaknesses {args.handle}' for full weakness list.\n")
+        print(f"\n  Use 'bb h1 weaknesses {handle}' for full weakness list.\n")
 
     elif args.subcmd == "weaknesses":
-        print(f"\n  Fetching weaknesses for '{args.handle}'...")
+        handle = _resolve_h1_handle(args)
+        print(f"\n  Fetching weaknesses for '{handle}'...")
 
-        if args.refresh or not hackerone._intel_cache_fresh(args.handle, "h1_weakness_cache"):
-            weaknesses = hackerone.get_weaknesses(args.handle)
-            hackerone.cache_weaknesses(args.handle, weaknesses)
+        if args.refresh or not hackerone._intel_cache_fresh(handle, "h1_weakness_cache"):
+            weaknesses = hackerone.get_weaknesses(handle)
+            hackerone.cache_weaknesses(handle, weaknesses)
         else:
-            weaknesses = hackerone.get_cached_weaknesses(args.handle)
+            weaknesses = hackerone.get_cached_weaknesses(handle)
 
         if _json_out(args, weaknesses):
             return
 
         if not weaknesses:
-            print(f"\n  No weakness types found for '{args.handle}'.\n")
+            print(f"\n  No weakness types found for '{handle}'.\n")
             return
 
-        print(f"\n═══ Accepted Weaknesses: {args.handle} ({len(weaknesses)}) ═══\n")
+        print(f"\n═══ Accepted Weaknesses: {handle} ({len(weaknesses)}) ═══\n")
         rows = []
         for w in weaknesses:
             rows.append({
@@ -2675,17 +2892,31 @@ def main():
         set_no_color(True)
 
     if not args.command:
-        parser.print_help()
-        print("\n💡 Quick start: bb init → bb use <id> → bb wizard vuln")
-        print("💡 HackerOne:  bb h1 auth → bb h1 import <program> → bb dashboard")
-        print("💡 Piping:     cat domains.txt | bb target add --stdin --type domain")
-        print("💡 JSON:       bb --json project list | jq '.[] | .name'")
+        # Show status by default instead of --help wall of text
+        try:
+            cmd_status(args)
+        except Exception:
+            # Not initialized yet — show quick start guidance
+            print("\n  BBRadar is not initialized yet.\n")
+            print("  Quick start:")
+            print("    bb init                      Initialize BBRadar")
+            print("    bb wizard project            Create your first project")
+            print("    bb use <id>                  Set active project")
+            print("    bb wizard vuln               Log a finding")
+            print("\n  HackerOne:")
+            print("    bb h1 auth                   Connect your account")
+            print("    bb h1 import <program>       Import a program")
+            print("    bb dashboard                 View dashboard")
+            print("\n  Run 'bb --help' for all commands.\n")
         sys.exit(0)
 
     handler = COMMAND_MAP.get(args.command)
     if handler:
         try:
             handler(args)
+        except KeyboardInterrupt:
+            print("\nAborted.", file=sys.stderr)
+            sys.exit(130)
         except Exception as e:
             msg = str(e)
             # Translate cryptic SQLite errors
@@ -2698,7 +2929,13 @@ def main():
             print(f"\n❌ Error: {msg}", file=sys.stderr)
             sys.exit(1)
     else:
-        parser.print_help()
+        print(f"\n❌ Unknown command '{args.command}'.", file=sys.stderr)
+        # Suggest closest match
+        import difflib
+        close = difflib.get_close_matches(args.command, COMMAND_MAP.keys(), n=3, cutoff=0.5)
+        if close:
+            print(f"   Did you mean: {', '.join(close)}?", file=sys.stderr)
+        print(f"\n   Run 'bb --help' for available commands.\n", file=sys.stderr)
         sys.exit(1)
 
 

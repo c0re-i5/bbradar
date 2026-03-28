@@ -12,11 +12,21 @@ Credentials are read from environment variables first, then config:
 
 import json
 import os
+import sys
+import time
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from ..core.config import load_config, set_config_value
 from ..core.audit import log_action
+
+# Discord embed limits
+_EMBED_FIELD_VALUE_MAX = 1024
+_EMBED_TITLE_MAX = 256
+_EMBED_DESC_MAX = 4096
+_MAX_EMBEDS = 10
+_CONTENT_MAX = 2000
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -55,16 +65,46 @@ def _get_notify_config() -> dict:
     })
 
 
-def configure_discord(webhook_url: str, event: str | None = None):
+def validate_webhook_url(url: str) -> str | None:
+    """Validate a Discord webhook URL.  Returns error message or None."""
+    if not url or not url.strip():
+        return "Webhook URL cannot be empty"
+    parsed = urlparse(url.strip())
+    if parsed.scheme != "https":
+        return "Webhook URL must use HTTPS"
+    if not parsed.hostname or not parsed.hostname.endswith("discord.com"):
+        return "Webhook URL must be a discord.com URL"
+    if not parsed.path.startswith("/api/webhooks/"):
+        return "Webhook URL must start with /api/webhooks/"
+    return None
+
+
+def mask_webhook_url(url: str) -> str:
+    """Mask a webhook URL for safe display: show first/last parts only."""
+    if not url:
+        return "(not set)"
+    parts = url.rsplit("/", 1)
+    if len(parts) == 2 and len(parts[1]) > 8:
+        token = parts[1]
+        return f"{parts[0]}/{token[:4]}...{token[-4:]}"
+    return url[:40] + "..."
+
+
+def configure_discord(webhook_url: str, event: str | None = None) -> str | None:
     """Save Discord webhook URL to config.
 
     *event* can be "scope" or "programs" for a channel-specific webhook,
     or None to set the default webhook.
+    Returns error message if URL is invalid, None on success.
     """
+    err = validate_webhook_url(webhook_url)
+    if err:
+        return err
     if event:
         set_config_value(f"notifications.discord_{event}_webhook", webhook_url)
     else:
         set_config_value("notifications.discord_webhook", webhook_url)
+    return None
 
 
 def configure_desktop(enabled: bool = True):
@@ -106,10 +146,12 @@ def get_status() -> dict:
 # ═══════════════════════════════════════════════════════════════════
 
 def _send_discord(content: str, embeds: list[dict] | None = None,
-                  webhook_url: str | None = None) -> bool:
+                  webhook_url: str | None = None,
+                  _retries: int = 2) -> bool:
     """Send a message to a Discord webhook. Returns True on success.
 
     If *webhook_url* is not given, uses the default webhook.
+    Retries on rate-limit (429) and transient server errors (5xx).
     """
     if not webhook_url:
         webhook_url = _get_discord_webhook()
@@ -118,20 +160,80 @@ def _send_discord(content: str, embeds: list[dict] | None = None,
 
     payload = {"username": "BBRadar"}
     if content:
-        payload["content"] = content[:2000]
+        if len(content) > _CONTENT_MAX:
+            payload["content"] = content[:_CONTENT_MAX - 20] + "\n_(truncated)_"
+        else:
+            payload["content"] = content
     if embeds:
-        payload["embeds"] = embeds[:10]
+        payload["embeds"] = _sanitize_embeds(embeds[:_MAX_EMBEDS])
 
     data = json.dumps(payload).encode("utf-8")
     req = Request(webhook_url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
-    req.add_header("User-Agent", "BBRadar/0.3.1")
+    req.add_header("User-Agent", "BBRadar/0.5.1")
 
+    for attempt in range(_retries + 1):
+        try:
+            with urlopen(req, timeout=15) as resp:
+                return resp.status in (200, 204)
+        except HTTPError as e:
+            if e.code == 429 and attempt < _retries:
+                # Rate limited — respect Retry-After header
+                retry_after = float(e.headers.get("Retry-After", "2"))
+                print(f"  ⏳ Discord rate-limited, retrying in {retry_after:.0f}s...",
+                      file=sys.stderr, flush=True)
+                time.sleep(min(retry_after, 10))
+                continue
+            if e.code >= 500 and attempt < _retries:
+                time.sleep(1)
+                continue
+            # Log actionable error details for the user
+            _log_discord_error(e)
+            return False
+        except (URLError, ValueError, OSError) as e:
+            if attempt < _retries:
+                time.sleep(1)
+                continue
+            print(f"  ✗ Discord webhook error: {e}", file=sys.stderr)
+            return False
+    return False
+
+
+def _log_discord_error(e: HTTPError):
+    """Print a helpful error for failed Discord webhook calls."""
+    msgs = {
+        400: "Bad request — payload may be too large or malformed",
+        401: "Unauthorized — webhook token is invalid",
+        403: "Forbidden — webhook may have been deleted or channel permissions changed",
+        404: "Not found — webhook URL is invalid or has been deleted",
+    }
+    msg = msgs.get(e.code, f"HTTP {e.code}")
+    print(f"  ✗ Discord webhook failed: {msg}", file=sys.stderr)
     try:
-        with urlopen(req, timeout=15) as resp:
-            return resp.status in (200, 204)
-    except (HTTPError, URLError, ValueError, OSError):
-        return False
+        body = e.read().decode("utf-8", errors="replace")[:200]
+        if body:
+            print(f"    Response: {body}", file=sys.stderr)
+    except Exception:
+        pass
+
+
+def _sanitize_embeds(embeds: list[dict]) -> list[dict]:
+    """Enforce Discord embed size limits to prevent API errors."""
+    sanitized = []
+    for embed in embeds:
+        e = dict(embed)
+        if e.get("title"):
+            e["title"] = e["title"][:_EMBED_TITLE_MAX]
+        if e.get("description"):
+            desc = e["description"]
+            if len(desc) > _EMBED_DESC_MAX:
+                e["description"] = desc[:_EMBED_DESC_MAX - 20] + "\n_(truncated)_"
+        if e.get("fields"):
+            for field in e["fields"]:
+                if len(field.get("value", "")) > _EMBED_FIELD_VALUE_MAX:
+                    field["value"] = field["value"][:_EMBED_FIELD_VALUE_MAX - 20] + "\n_(truncated)_"
+        sanitized.append(e)
+    return sanitized
 
 
 def _build_scope_change_embed(result: dict) -> dict:
@@ -415,4 +517,75 @@ def notify_new_hacktivity(disclosures: list[dict], db_path=None) -> dict:
         "discord": discord_ok,
         "desktop": desktop_ok,
         "count": total_reports,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# KEV (actively exploited vulnerability) notifications
+# ═══════════════════════════════════════════════════════════════════
+
+def _build_kev_embed(entries: list[dict]) -> dict:
+    """Build a Discord embed for new CISA KEV entries."""
+    lines = []
+    for e in entries[:15]:
+        cve = e.get("cve_id", "?")
+        vendor = e.get("vendor", "")
+        product = e.get("product", "")
+        name = e.get("name", "")[:50]
+        added = e.get("date_added", "")
+        lines.append(f"**{cve}** — {vendor} {product}: {name} (added {added})")
+    if len(entries) > 15:
+        lines.append(f"_...and {len(entries) - 15} more_")
+
+    return {
+        "title": f"⚠️ {len(entries)} New Actively Exploited Vulnerabilities",
+        "description": "\n".join(lines),
+        "color": 0xFF0000,  # red — critical security intelligence
+        "footer": {"text": "Source: CISA Known Exploited Vulnerabilities catalog"},
+    }
+
+
+def notify_new_kev(entries: list[dict], db_path=None) -> dict:
+    """
+    Send notifications for newly added CISA KEV entries.
+
+    *entries* should be a list of dicts with keys:
+        cve_id, vendor, product, name, date_added
+
+    Returns {discord: bool, desktop: bool, count: int}
+    """
+    if not entries:
+        return {"discord": False, "desktop": False, "count": 0}
+
+    status = get_status()
+    discord_ok = False
+    desktop_ok = False
+
+    # Discord — use default webhook (KEV is global intel, not program-specific)
+    if status["discord"]["configured"]:
+        embed = _build_kev_embed(entries)
+        cves = ", ".join(e["cve_id"] for e in entries[:5])
+        more = f" (+{len(entries) - 5} more)" if len(entries) > 5 else ""
+        content = f"⚠️ **{len(entries)} new actively exploited vuln(s) in CISA KEV:** {cves}{more}"
+        discord_ok = _send_discord(content, embeds=[embed])
+
+    # Desktop
+    if status["desktop"]["enabled"]:
+        cves = ", ".join(e["cve_id"] for e in entries[:3])
+        more = f" (+{len(entries) - 3} more)" if len(entries) > 3 else ""
+        desktop_ok = _send_desktop(
+            f"BBRadar: {len(entries)} New KEV Entries",
+            f"Actively exploited: {cves}{more}",
+        )
+
+    log_action("kev_notified", "notifier", None, {
+        "count": len(entries),
+        "discord": discord_ok,
+        "desktop": desktop_ok,
+    }, db_path)
+
+    return {
+        "discord": discord_ok,
+        "desktop": desktop_ok,
+        "count": len(entries),
     }

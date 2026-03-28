@@ -407,7 +407,8 @@ def import_from_text(project_id: int, text: str, source: str = "import",
     Lines starting with # are comments.  Empty lines are skipped.
     """
     rules = []
-    for line in text.splitlines():
+    skipped_lines = []
+    for line_num, line in enumerate(text.splitlines(), 1):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -419,12 +420,19 @@ def import_from_text(project_id: int, text: str, source: str = "import",
         rule = _parse_scope_line(line)
         if rule:
             rules.append(rule)
+        else:
+            skipped_lines.append((line_num, line))
 
     if not rules:
-        return {"added": 0, "errors": 0, "message": "No valid scope rules found in input"}
+        return {"added": 0, "errors": 0, "skipped": skipped_lines,
+                "message": "No valid scope rules found in input"}
 
     count = bulk_add_rules(project_id, rules, source=source, db_path=db_path)
-    return {"added": count, "total_parsed": len(rules)}
+    result = {"added": count, "total_parsed": len(rules)}
+    if skipped_lines:
+        result["skipped"] = skipped_lines
+        result["skipped_count"] = len(skipped_lines)
+    return result
 
 
 def import_from_file(project_id: int, filepath: str, db_path=None) -> dict:
@@ -691,9 +699,14 @@ def _validate_pattern(pattern: str, pattern_type: str):
     """Validate that a pattern is syntactically correct."""
     if pattern_type == "regex":
         try:
-            re.compile(pattern)
+            compiled = re.compile(pattern)
         except re.error as e:
             raise ValueError(f"Invalid regex pattern: {e}")
+        # Basic ReDoS protection: reject patterns with nested quantifiers
+        if re.search(r'(\.\*|\.\+|\[.*\])[*+?]\)?[*+?]', pattern):
+            raise ValueError(
+                "Regex pattern rejected: nested quantifiers may cause catastrophic backtracking"
+            )
     elif pattern_type == "cidr":
         try:
             ipaddress.ip_network(pattern, strict=False)
