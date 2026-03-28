@@ -397,3 +397,262 @@ class TestConfigureDiscordValidation:
         result = notifier.configure_discord("http://evil.com/steal")
         assert result is not None
         assert isinstance(result, str)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Tests: Verbosity and project labels
+# ═══════════════════════════════════════════════════════════════════
+
+class TestVerbosity:
+    @patch.dict("os.environ", {"BBRADAR_NOTIFY_VERBOSITY": "summary"})
+    def test_env_var_overrides(self):
+        assert notifier._get_verbosity() == "summary"
+
+    @patch.dict("os.environ", {"BBRADAR_NOTIFY_VERBOSITY": "INVALID"})
+    @patch("bbradar.modules.notifier.load_config", return_value={})
+    def test_invalid_env_falls_back_to_config(self, _):
+        assert notifier._get_verbosity() == "minimal"
+
+    @patch.dict("os.environ", {}, clear=True)
+    @patch("bbradar.modules.notifier.load_config",
+           return_value={"notifications": {"verbosity": "verbose"}})
+    def test_config_value(self, _):
+        import os
+        os.environ.pop("BBRADAR_NOTIFY_VERBOSITY", None)
+        assert notifier._get_verbosity() == "verbose"
+
+    @patch("bbradar.modules.notifier.set_config_value")
+    def test_configure_valid(self, mock_set):
+        assert notifier.configure_verbosity("summary") is None
+        mock_set.assert_called_once_with("notifications.verbosity", "summary")
+
+    def test_configure_invalid(self):
+        err = notifier.configure_verbosity("debug")
+        assert err is not None
+        assert "Invalid" in err
+
+
+class TestProjectLabel:
+    @patch("bbradar.modules.notifier._get_verbosity", return_value="minimal")
+    def test_minimal_hides_name(self, _):
+        assert notifier._project_label(3, "secret-program") == "Project #3"
+
+    @patch("bbradar.modules.notifier._get_verbosity", return_value="summary")
+    def test_summary_hides_name(self, _):
+        assert notifier._project_label(3, "secret-program") == "Project #3"
+
+    @patch("bbradar.modules.notifier._get_verbosity", return_value="verbose")
+    def test_verbose_shows_name(self, _):
+        assert notifier._project_label(3, "secret-program") == "Project #3 (secret-program)"
+
+    @patch("bbradar.modules.notifier._get_verbosity", return_value="verbose")
+    def test_verbose_no_name(self, _):
+        assert notifier._project_label(3) == "Project #3"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Tests: Vuln notifications
+# ═══════════════════════════════════════════════════════════════════
+
+_VULNS_WH = "https://discord.com/api/webhooks/vulns/test"
+
+
+class TestNotifyVulnCreated:
+    @patch("bbradar.modules.notifier._send_discord", return_value=True)
+    @patch("bbradar.modules.notifier._get_discord_webhook",
+           side_effect=lambda e=None: _VULNS_WH if e == "vulns" else None)
+    @patch("bbradar.modules.notifier.get_status",
+           return_value={"desktop": {"enabled": False}})
+    @patch("bbradar.modules.notifier.log_action")
+    def test_fires_for_critical(self, mock_log, _, __, mock_send):
+        result = notifier.notify_vuln_created(1, 5, "critical")
+        assert result["discord"] is True
+        mock_send.assert_called_once()
+        payload_content = mock_send.call_args[0][0]
+        assert "Project #5" in payload_content
+        assert "Critical" in payload_content or "critical" in payload_content.lower()
+
+    @patch("bbradar.modules.notifier._send_discord", return_value=True)
+    @patch("bbradar.modules.notifier._get_discord_webhook",
+           side_effect=lambda e=None: _VULNS_WH if e == "vulns" else None)
+    @patch("bbradar.modules.notifier.get_status",
+           return_value={"desktop": {"enabled": False}})
+    @patch("bbradar.modules.notifier.log_action")
+    def test_fires_for_high(self, mock_log, _, __, mock_send):
+        result = notifier.notify_vuln_created(2, 3, "high")
+        assert result["discord"] is True
+
+    def test_skips_medium(self):
+        result = notifier.notify_vuln_created(1, 1, "medium")
+        assert result == {"discord": False, "desktop": False}
+
+    def test_skips_low(self):
+        result = notifier.notify_vuln_created(1, 1, "low")
+        assert result == {"discord": False, "desktop": False}
+
+    def test_skips_informational(self):
+        result = notifier.notify_vuln_created(1, 1, "informational")
+        assert result == {"discord": False, "desktop": False}
+
+    @patch("bbradar.modules.notifier._send_discord", return_value=True)
+    @patch("bbradar.modules.notifier._get_discord_webhook",
+           side_effect=lambda e=None: _VULNS_WH if e == "vulns" else None)
+    @patch("bbradar.modules.notifier.get_status",
+           return_value={"desktop": {"enabled": False}})
+    @patch("bbradar.modules.notifier.log_action")
+    @patch("bbradar.modules.notifier._get_verbosity", return_value="minimal")
+    def test_no_name_in_minimal(self, _, mock_log, __, ___, mock_send):
+        notifier.notify_vuln_created(1, 5, "critical", project_name="secret")
+        content = mock_send.call_args[0][0]
+        assert "secret" not in content
+        embed_desc = mock_send.call_args[1]["embeds"][0]["description"]
+        assert "secret" not in embed_desc
+
+
+class TestNotifyVulnStatusChange:
+    @patch("bbradar.modules.notifier._send_discord", return_value=True)
+    @patch("bbradar.modules.notifier._get_discord_webhook",
+           side_effect=lambda e=None: _VULNS_WH if e == "vulns" else None)
+    @patch("bbradar.modules.notifier.get_status",
+           return_value={"desktop": {"enabled": False}})
+    @patch("bbradar.modules.notifier.log_action")
+    def test_fires_on_accepted(self, mock_log, _, __, mock_send):
+        result = notifier.notify_vuln_status_change(1, 3, "new", "accepted")
+        assert result["discord"] is True
+
+    @patch("bbradar.modules.notifier._send_discord", return_value=True)
+    @patch("bbradar.modules.notifier._get_discord_webhook",
+           side_effect=lambda e=None: _VULNS_WH if e == "vulns" else None)
+    @patch("bbradar.modules.notifier.get_status",
+           return_value={"desktop": {"enabled": False}})
+    @patch("bbradar.modules.notifier.log_action")
+    def test_fires_on_rejected(self, mock_log, _, __, mock_send):
+        result = notifier.notify_vuln_status_change(1, 3, "new", "rejected")
+        assert result["discord"] is True
+
+    @patch("bbradar.modules.notifier._send_discord", return_value=True)
+    @patch("bbradar.modules.notifier._get_discord_webhook",
+           side_effect=lambda e=None: _VULNS_WH if e == "vulns" else None)
+    @patch("bbradar.modules.notifier.get_status",
+           return_value={"desktop": {"enabled": False}})
+    @patch("bbradar.modules.notifier.log_action")
+    def test_fires_on_bounty(self, mock_log, _, __, mock_send):
+        result = notifier.notify_vuln_status_change(
+            1, 3, "accepted", "accepted", bounty_amount=500.0)
+        assert result["discord"] is True
+        embed_desc = mock_send.call_args[1]["embeds"][0]["description"]
+        assert "$500.00" in embed_desc
+
+    def test_skips_non_notable_status(self):
+        result = notifier.notify_vuln_status_change(1, 3, "new", "triaged")
+        assert result == {"discord": False, "desktop": False}
+
+    @patch("bbradar.modules.notifier._send_discord", return_value=True)
+    @patch("bbradar.modules.notifier._get_discord_webhook",
+           side_effect=lambda e=None: _VULNS_WH if e == "vulns" else None)
+    @patch("bbradar.modules.notifier.get_status",
+           return_value={"desktop": {"enabled": False}})
+    @patch("bbradar.modules.notifier.log_action")
+    def test_fires_on_duplicate(self, mock_log, _, __, mock_send):
+        result = notifier.notify_vuln_status_change(1, 3, "new", "duplicate")
+        assert result["discord"] is True
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Tests: Ingest notifications
+# ═══════════════════════════════════════════════════════════════════
+
+_INGEST_WH = "https://discord.com/api/webhooks/ingest/test"
+
+
+class TestNotifyIngestComplete:
+    def _result(self, new=3, dups=2, total=10, tool="nuclei", findings=None):
+        if findings is None:
+            findings = [{"severity": "high"}] * new
+        return {
+            "tool": tool,
+            "file": "scan.json",
+            "total_parsed": total,
+            "new": new,
+            "duplicates": dups,
+            "out_of_scope": 0,
+            "skipped": 0,
+            "created_ids": list(range(1, new + 1)),
+            "create_errors": [],
+            "findings": findings,
+        }
+
+    @patch("bbradar.modules.notifier._send_discord", return_value=True)
+    @patch("bbradar.modules.notifier._get_discord_webhook",
+           side_effect=lambda e=None: _INGEST_WH if e == "ingest" else None)
+    @patch("bbradar.modules.notifier.get_status",
+           return_value={"desktop": {"enabled": False}})
+    @patch("bbradar.modules.notifier.log_action")
+    def test_fires_with_new_findings(self, mock_log, _, __, mock_send):
+        result = notifier.notify_ingest_complete(self._result(), 5)
+        assert result["discord"] is True
+        content = mock_send.call_args[0][0]
+        assert "3 new finding" in content
+        assert "Project #5" in content
+
+    def test_skips_when_no_new(self):
+        result = notifier.notify_ingest_complete(self._result(new=0, findings=[]), 5)
+        assert result == {"discord": False, "desktop": False}
+
+    @patch("bbradar.modules.notifier._send_discord", return_value=True)
+    @patch("bbradar.modules.notifier._get_discord_webhook",
+           side_effect=lambda e=None: _INGEST_WH if e == "ingest" else None)
+    @patch("bbradar.modules.notifier.get_status",
+           return_value={"desktop": {"enabled": False}})
+    @patch("bbradar.modules.notifier.log_action")
+    @patch("bbradar.modules.notifier._get_verbosity", return_value="summary")
+    def test_summary_includes_tool(self, _, mock_log, __, ___, mock_send):
+        notifier.notify_ingest_complete(self._result(tool="nmap"), 1)
+        embed_desc = mock_send.call_args[1]["embeds"][0]["description"]
+        assert "nmap" in embed_desc
+
+    @patch("bbradar.modules.notifier._send_discord", return_value=True)
+    @patch("bbradar.modules.notifier._get_discord_webhook",
+           side_effect=lambda e=None: _INGEST_WH if e == "ingest" else None)
+    @patch("bbradar.modules.notifier.get_status",
+           return_value={"desktop": {"enabled": False}})
+    @patch("bbradar.modules.notifier.log_action")
+    @patch("bbradar.modules.notifier._get_verbosity", return_value="minimal")
+    def test_minimal_hides_tool(self, _, mock_log, __, ___, mock_send):
+        notifier.notify_ingest_complete(self._result(tool="nmap"), 1)
+        embed_desc = mock_send.call_args[1]["embeds"][0]["description"]
+        assert "nmap" not in embed_desc
+
+    @patch("bbradar.modules.notifier._send_discord", return_value=True)
+    @patch("bbradar.modules.notifier._get_discord_webhook",
+           side_effect=lambda e=None: _INGEST_WH if e == "ingest" else None)
+    @patch("bbradar.modules.notifier.get_status",
+           return_value={"desktop": {"enabled": False}})
+    @patch("bbradar.modules.notifier.log_action")
+    def test_severity_breakdown(self, mock_log, _, __, mock_send):
+        findings = [
+            {"severity": "critical"},
+            {"severity": "critical"},
+            {"severity": "high"},
+        ]
+        notifier.notify_ingest_complete(
+            self._result(new=3, findings=findings), 1)
+        embed_desc = mock_send.call_args[1]["embeds"][0]["description"]
+        assert "2 critical" in embed_desc
+        assert "1 high" in embed_desc
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Tests: get_status includes new channels
+# ═══════════════════════════════════════════════════════════════════
+
+class TestGetStatusNewChannels:
+    @patch("bbradar.modules.notifier._get_notify_config", return_value={})
+    @patch("bbradar.modules.notifier._get_discord_webhook", return_value=None)
+    @patch("bbradar.modules.notifier._get_verbosity", return_value="minimal")
+    def test_includes_vulns_and_ingest(self, _, __, ___):
+        status = notifier.get_status()
+        assert "discord_vulns" in status
+        assert "discord_ingest" in status
+        assert "verbosity" in status
+        assert status["verbosity"] == "minimal"

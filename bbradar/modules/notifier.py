@@ -1,13 +1,25 @@
 """
 Notification module for BBRadar.
 
-Sends scope change alerts and new program notifications to configured
-channels. Currently supports:
-  - Discord webhooks
+Sends scope change alerts, vuln lifecycle events, ingest summaries, and
+program notifications to configured channels.  Currently supports:
+  - Discord webhooks (per-event channel routing)
   - Desktop notifications (notify-send on Linux)
 
+Security model — no PII by default:
+  - ``verbosity`` (minimal / summary / verbose) controls how much detail is
+    included in outbound messages.  Default is **minimal**.
+  - Projects are identified by **ID only** (e.g. "Project #3"), never by
+    name or program handle, unless ``verbose`` is explicitly enabled.
+  - Vulnerability titles, endpoints, reproduction steps, request/response
+    data, and target addresses are **never** included at any verbosity level.
+
 Credentials are read from environment variables first, then config:
-  BBRADAR_DISCORD_WEBHOOK — Discord webhook URL
+  BBRADAR_DISCORD_WEBHOOK        — default webhook (fallback for all events)
+  BBRADAR_DISCORD_SCOPE_WEBHOOK  — scope change alerts
+  BBRADAR_DISCORD_PROGRAMS_WEBHOOK — new program alerts
+  BBRADAR_DISCORD_VULNS_WEBHOOK  — vulnerability lifecycle alerts
+  BBRADAR_DISCORD_INGEST_WEBHOOK — ingest / scan result summaries
 """
 
 import json
@@ -32,6 +44,31 @@ _CONTENT_MAX = 2000
 # ═══════════════════════════════════════════════════════════════════
 # Credential / Config helpers
 # ═══════════════════════════════════════════════════════════════════
+
+VALID_VERBOSITY = ("minimal", "summary", "verbose")
+VALID_EVENTS = ("scope", "programs", "vulns", "ingest")
+
+
+def _get_verbosity() -> str:
+    """Return the configured notification verbosity level."""
+    env = os.environ.get("BBRADAR_NOTIFY_VERBOSITY", "").lower()
+    if env in VALID_VERBOSITY:
+        return env
+    cfg = load_config()
+    level = cfg.get("notifications", {}).get("verbosity", "minimal")
+    return level if level in VALID_VERBOSITY else "minimal"
+
+
+def _project_label(project_id: int, project_name: str | None = None) -> str:
+    """Return a safe label for a project.
+
+    • minimal / summary → ``"Project #<id>"``
+    • verbose           → ``"Project #<id> (<name>)"`` if *name* provided
+    """
+    base = f"Project #{project_id}"
+    if _get_verbosity() == "verbose" and project_name:
+        return f"{base} ({project_name})"
+    return base
 
 def _get_discord_webhook(event: str | None = None) -> str | None:
     """Get Discord webhook URL from env var or config.
@@ -93,7 +130,7 @@ def mask_webhook_url(url: str) -> str:
 def configure_discord(webhook_url: str, event: str | None = None) -> str | None:
     """Save Discord webhook URL to config.
 
-    *event* can be "scope" or "programs" for a channel-specific webhook,
+    *event* can be one of VALID_EVENTS for a channel-specific webhook,
     or None to set the default webhook.
     Returns error message if URL is invalid, None on success.
     """
@@ -104,6 +141,15 @@ def configure_discord(webhook_url: str, event: str | None = None) -> str | None:
         set_config_value(f"notifications.discord_{event}_webhook", webhook_url)
     else:
         set_config_value("notifications.discord_webhook", webhook_url)
+    return None
+
+
+def configure_verbosity(level: str) -> str | None:
+    """Set notification verbosity.  Returns error message or None."""
+    level = level.lower()
+    if level not in VALID_VERBOSITY:
+        return f"Invalid verbosity '{level}'. Valid: {', '.join(VALID_VERBOSITY)}"
+    set_config_value("notifications.verbosity", level)
     return None
 
 
@@ -118,23 +164,29 @@ def get_status() -> dict:
     discord_url = _get_discord_webhook()
     scope_url = _get_discord_webhook("scope")
     programs_url = _get_discord_webhook("programs")
+    vulns_url = _get_discord_webhook("vulns")
+    ingest_url = _get_discord_webhook("ingest")
+
+    def _channel_status(event_url, event_name):
+        env_key = f"BBRADAR_DISCORD_{event_name.upper()}_WEBHOOK"
+        return {
+            "configured": bool(event_url),
+            "source": "env" if os.environ.get(env_key) else "config",
+            "uses_default": (event_url == discord_url
+                             and not os.environ.get(env_key)
+                             and not cfg.get(f"discord_{event_name}_webhook")),
+        }
+
     return {
+        "verbosity": _get_verbosity(),
         "discord": {
             "configured": bool(discord_url),
             "source": "env" if os.environ.get("BBRADAR_DISCORD_WEBHOOK") else "config",
         },
-        "discord_scope": {
-            "configured": bool(scope_url),
-            "source": "env" if os.environ.get("BBRADAR_DISCORD_SCOPE_WEBHOOK") else "config",
-            "uses_default": scope_url == discord_url and not os.environ.get("BBRADAR_DISCORD_SCOPE_WEBHOOK")
-                            and not cfg.get("discord_scope_webhook"),
-        },
-        "discord_programs": {
-            "configured": bool(programs_url),
-            "source": "env" if os.environ.get("BBRADAR_DISCORD_PROGRAMS_WEBHOOK") else "config",
-            "uses_default": programs_url == discord_url and not os.environ.get("BBRADAR_DISCORD_PROGRAMS_WEBHOOK")
-                            and not cfg.get("discord_programs_webhook"),
-        },
+        "discord_scope": _channel_status(scope_url, "scope"),
+        "discord_programs": _channel_status(programs_url, "programs"),
+        "discord_vulns": _channel_status(vulns_url, "vulns"),
+        "discord_ingest": _channel_status(ingest_url, "ingest"),
         "desktop": {
             "enabled": cfg.get("desktop", False),
         },
@@ -170,7 +222,7 @@ def _send_discord(content: str, embeds: list[dict] | None = None,
     data = json.dumps(payload).encode("utf-8")
     req = Request(webhook_url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
-    req.add_header("User-Agent", "BBRadar/0.5.1")
+    req.add_header("User-Agent", "BBRadar/0.5.2")
 
     for attempt in range(_retries + 1):
         try:
@@ -589,3 +641,243 @@ def notify_new_kev(entries: list[dict], db_path=None) -> dict:
         "desktop": desktop_ok,
         "count": len(entries),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Vulnerability lifecycle notifications
+# ═══════════════════════════════════════════════════════════════════
+
+_SEV_COLOR = {
+    "critical": 0xFF0000,
+    "high": 0xFF6B35,
+    "medium": 0xFFAA00,
+    "low": 0x00AAFF,
+    "informational": 0x888888,
+}
+
+_SEV_EMOJI = {
+    "critical": "🔴",
+    "high": "🟠",
+    "medium": "🟡",
+    "low": "🔵",
+    "informational": "⚪",
+}
+
+# Only notify on these severities to avoid noise
+_NOTIFY_SEVERITIES = {"critical", "high"}
+
+
+def notify_vuln_created(vuln_id: int, project_id: int, severity: str,
+                        project_name: str | None = None,
+                        vuln_type: str | None = None,
+                        db_path=None) -> dict:
+    """
+    Send notification when a critical/high vulnerability is created.
+
+    Only fires for ``critical`` and ``high`` severity.  No finding titles,
+    endpoints, or reproduction detail are ever included.
+
+    Returns {discord: bool, desktop: bool}
+    """
+    severity = severity.lower()
+    if severity not in _NOTIFY_SEVERITIES:
+        return {"discord": False, "desktop": False}
+
+    status = get_status()
+    discord_ok = False
+    desktop_ok = False
+    label = _project_label(project_id, project_name)
+    emoji = _SEV_EMOJI.get(severity, "⚪")
+    verbosity = _get_verbosity()
+
+    # Discord
+    vulns_url = _get_discord_webhook("vulns")
+    if vulns_url:
+        desc = f"**Severity:** {severity.capitalize()}\n**Finding:** #{vuln_id}\n**Project:** {label}"
+        if verbosity in ("summary", "verbose") and vuln_type:
+            desc += f"\n**Type:** {vuln_type}"
+
+        embed = {
+            "title": f"{emoji} {severity.capitalize()} Finding Created",
+            "description": desc,
+            "color": _SEV_COLOR.get(severity, 0x888888),
+        }
+        content = f"{emoji} **{severity.capitalize()} finding** added to {label}"
+        discord_ok = _send_discord(content, embeds=[embed], webhook_url=vulns_url)
+
+    # Desktop
+    if status["desktop"]["enabled"]:
+        desktop_ok = _send_desktop(
+            f"BBRadar: {severity.capitalize()} Finding",
+            f"Finding #{vuln_id} added to {label}",
+        )
+
+    if discord_ok or desktop_ok:
+        log_action("vuln_notified", "notifier", vuln_id, {
+            "severity": severity,
+            "project_id": project_id,
+            "discord": discord_ok,
+            "desktop": desktop_ok,
+        }, db_path)
+
+    return {"discord": discord_ok, "desktop": desktop_ok}
+
+
+def notify_vuln_status_change(vuln_id: int, project_id: int,
+                              old_status: str, new_status: str,
+                              severity: str = "medium",
+                              bounty_amount: float | None = None,
+                              project_name: str | None = None,
+                              db_path=None) -> dict:
+    """
+    Send notification when a vuln transitions to a notable state.
+
+    Notable states: ``accepted``, ``rejected``, ``duplicate``.
+    Also fires when ``bounty_amount`` is set.
+    No finding titles or detail are included.
+    """
+    notable_states = {"accepted", "rejected", "duplicate"}
+    has_bounty = bounty_amount is not None and bounty_amount > 0
+    if new_status not in notable_states and not has_bounty:
+        return {"discord": False, "desktop": False}
+
+    status = get_status()
+    discord_ok = False
+    desktop_ok = False
+    label = _project_label(project_id, project_name)
+
+    if has_bounty:
+        emoji = "💰"
+        title = "Bounty Awarded"
+    elif new_status == "accepted":
+        emoji = "✅"
+        title = "Finding Accepted"
+    elif new_status == "rejected":
+        emoji = "❌"
+        title = "Finding Rejected"
+    elif new_status == "duplicate":
+        emoji = "♻️"
+        title = "Finding Duplicate"
+    else:
+        emoji = "🔄"
+        title = f"Status: {new_status}"
+
+    desc = (f"**Finding:** #{vuln_id}\n"
+            f"**Severity:** {severity.capitalize()}\n"
+            f"**Status:** {old_status} → {new_status}\n"
+            f"**Project:** {label}")
+    if has_bounty:
+        desc += f"\n**Bounty:** ${bounty_amount:,.2f}"
+
+    vulns_url = _get_discord_webhook("vulns")
+    if vulns_url:
+        embed = {
+            "title": f"{emoji} {title}",
+            "description": desc,
+            "color": 0x00C853 if new_status == "accepted" or has_bounty else 0xFF6B35,
+        }
+        content = f"{emoji} **{title}** — finding #{vuln_id} in {label}"
+        discord_ok = _send_discord(content, embeds=[embed], webhook_url=vulns_url)
+
+    if status["desktop"]["enabled"]:
+        desktop_ok = _send_desktop(
+            f"BBRadar: {title}",
+            f"Finding #{vuln_id} in {label}",
+        )
+
+    if discord_ok or desktop_ok:
+        log_action("vuln_status_notified", "notifier", vuln_id, {
+            "old_status": old_status,
+            "new_status": new_status,
+            "discord": discord_ok,
+            "desktop": desktop_ok,
+        }, db_path)
+
+    return {"discord": discord_ok, "desktop": desktop_ok}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Ingest / scan result notifications
+# ═══════════════════════════════════════════════════════════════════
+
+def notify_ingest_complete(result: dict, project_id: int,
+                           project_name: str | None = None,
+                           db_path=None) -> dict:
+    """
+    Send notification after a scan ingest with new findings.
+
+    Only fires when ``result["new"] > 0``.  No finding titles, endpoints,
+    or target addresses are included.
+
+    *result* is the dict returned by ``ingest_data()`` / ``ingest_file()``.
+
+    Returns {discord: bool, desktop: bool}
+    """
+    new_count = result.get("new", 0)
+    if new_count == 0:
+        return {"discord": False, "desktop": False}
+
+    status = get_status()
+    discord_ok = False
+    desktop_ok = False
+    label = _project_label(project_id, project_name)
+    verbosity = _get_verbosity()
+
+    tool = result.get("tool", "unknown")
+    dups = result.get("duplicates", 0)
+    total = result.get("total_parsed", 0)
+
+    # Count new findings by severity from created vulns
+    by_sev = {}
+    for f in result.get("findings", []):
+        sev = f.get("severity", "informational")
+        by_sev[sev] = by_sev.get(sev, 0) + 1
+
+    sev_line = ""
+    if by_sev:
+        parts = []
+        for s in ("critical", "high", "medium", "low", "informational"):
+            c = by_sev.get(s, 0)
+            if c:
+                parts.append(f"{_SEV_EMOJI.get(s, '•')} {c} {s}")
+        sev_line = " — ".join(parts)
+
+    # Discord
+    ingest_url = _get_discord_webhook("ingest")
+    if ingest_url:
+        desc = f"**New findings:** {new_count}"
+        if dups:
+            desc += f"\n**Duplicates:** {dups}"
+        if total:
+            desc += f"\n**Total parsed:** {total}"
+        desc += f"\n**Project:** {label}"
+        if verbosity in ("summary", "verbose"):
+            desc += f"\n**Tool:** {tool}"
+        if sev_line:
+            desc += f"\n\n{sev_line}"
+
+        embed = {
+            "title": f"📥 Scan Imported",
+            "description": desc,
+            "color": 0x00AAFF,
+        }
+        content = f"📥 **{new_count} new finding(s)** imported into {label}"
+        discord_ok = _send_discord(content, embeds=[embed], webhook_url=ingest_url)
+
+    # Desktop
+    if status["desktop"]["enabled"]:
+        desktop_ok = _send_desktop(
+            f"BBRadar: {new_count} New Findings",
+            f"Scan imported into {label}",
+        )
+
+    if discord_ok or desktop_ok:
+        log_action("ingest_notified", "notifier", None, {
+            "project_id": project_id,
+            "tool": tool,
+            "new": new_count,
+            "discord": discord_ok,
+            "desktop": desktop_ok,
+        }, db_path)
+
+    return {"discord": discord_ok, "desktop": desktop_ok}

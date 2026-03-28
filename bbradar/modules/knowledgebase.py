@@ -78,7 +78,7 @@ SOURCES = {
     },
 }
 
-USER_AGENT = "BBRadar/0.5.1 (Bug Bounty Assessment Platform)"
+USER_AGENT = "BBRadar/0.5.2 (Bug Bounty Assessment Platform)"
 
 
 def _kb_dir() -> Path:

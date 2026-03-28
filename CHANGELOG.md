@@ -2,6 +2,50 @@
 
 All notable changes to BBRadar will be documented in this file.
 
+## [0.5.2] — 2026-03-28
+
+### Added
+
+- **Vuln lifecycle notifications** — Discord alerts when critical/high findings
+  are created or when findings change to notable states (accepted, rejected,
+  duplicate, bounty awarded):
+  - `notify_vuln_created()` — fires on critical/high severity only
+  - `notify_vuln_status_change()` — fires on accepted, rejected, duplicate, or
+    bounty award, includes bounty amount when applicable
+  - Wired into `create_vuln()` and `update_vuln()` with fail-safe guards
+  - Dedicated channel: `bb h1 notify discord-vulns <url>` or env var
+    `BBRADAR_DISCORD_VULNS_WEBHOOK`
+
+- **Ingest notifications** — Discord summary when scan imports produce new
+  findings, with severity breakdown (e.g. 🔴 2 critical — 🟠 1 high):
+  - `notify_ingest_complete()` — fires when new findings > 0, skips dry runs
+  - Wired into `ingest_data()` with fail-safe guard
+  - Dedicated channel: `bb h1 notify discord-ingest <url>` or env var
+    `BBRADAR_DISCORD_INGEST_WEBHOOK`
+
+- **Notification verbosity control** — three levels to control how much detail
+  appears in outbound messages:
+  - `minimal` (default) — project IDs only, no names, no tool names
+  - `summary` — includes tool name and vuln type
+  - `verbose` — includes project name alongside ID
+  - Configure via `bb h1 notify verbosity <level>` or env var
+    `BBRADAR_NOTIFY_VERBOSITY`
+
+- **Non-PII project labels** — notifications use `Project #<id>` instead of
+  program names by default, so Discord messages can't be linked to specific
+  targets or programs.
+
+- 26 new tests covering verbosity, project labels, vuln notifications, ingest
+  notifications, and status display (363 total)
+
+### Changed
+
+- `bb h1 notify` choices expanded: `discord-vulns`, `discord-ingest`,
+  `verbosity` alongside existing channel types
+- `bb h1 notify status` now displays all 5 Discord channels + verbosity level
+- `bb h1 notify test` now tests vulns and ingest channels
+- `get_status()` returns `discord_vulns`, `discord_ingest`, and `verbosity`
+
 ## [0.5.1] — 2026-03-28
 
 ### Added

@@ -72,6 +72,15 @@ def create_vuln(project_id: int, title: str, severity: str = "medium",
         vid = cursor.lastrowid
     log_action("created", "vuln", vid,
                {"project_id": project_id, "title": title, "severity": severity}, db_path)
+
+    # Notify on critical/high findings
+    try:
+        from .notifier import notify_vuln_created
+        notify_vuln_created(vid, project_id, severity,
+                            vuln_type=vuln_type, db_path=db_path)
+    except Exception:
+        pass  # never let notification failure break vuln creation
+
     return vid
 
 
@@ -124,17 +133,19 @@ def update_vuln(vuln_id: int, db_path=None, **kwargs) -> bool:
         return False
 
     # Enforce status transition state machine
+    old_status = None
+    current_vuln = None
     if "status" in updates:
         new_status = updates["status"].lower()
         if new_status not in VALID_STATUSES:
             raise ValueError(f"Invalid status '{new_status}'. Valid: {VALID_STATUSES}")
-        current = get_vuln(vuln_id, db_path)
-        if current:
-            current_status = current["status"]
-            allowed_next = STATUS_TRANSITIONS.get(current_status, set())
-            if new_status != current_status and new_status not in allowed_next:
+        current_vuln = get_vuln(vuln_id, db_path)
+        if current_vuln:
+            old_status = current_vuln["status"]
+            allowed_next = STATUS_TRANSITIONS.get(old_status, set())
+            if new_status != old_status and new_status not in allowed_next:
                 raise ValueError(
-                    f"Cannot transition from '{current_status}' to '{new_status}'. "
+                    f"Cannot transition from '{old_status}' to '{new_status}'. "
                     f"Allowed: {sorted(allowed_next)}"
                 )
         updates["status"] = new_status
@@ -149,6 +160,23 @@ def update_vuln(vuln_id: int, db_path=None, **kwargs) -> bool:
     with get_connection(db_path) as conn:
         conn.execute(f"UPDATE vulns SET {set_clause} WHERE id = ?", values)
     log_action("updated", "vuln", vuln_id, updates, db_path)
+
+    # Notify on notable status transitions (accepted, rejected, duplicate, bounty)
+    if old_status and updates.get("status") and old_status != updates["status"]:
+        try:
+            from .notifier import notify_vuln_status_change
+            notify_vuln_status_change(
+                vuln_id,
+                project_id=current_vuln["project_id"],
+                old_status=old_status,
+                new_status=updates["status"],
+                severity=current_vuln.get("severity", "medium"),
+                bounty_amount=updates.get("bounty_amount") or kwargs.get("bounty_amount"),
+                db_path=db_path,
+            )
+        except Exception:
+            pass  # never let notification failure break vuln update
+
     return True
 
 

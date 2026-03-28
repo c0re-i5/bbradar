@@ -257,9 +257,12 @@ bb h1 intel <handle>                # ...or specify a handle
 bb h1 intel <handle> --refresh      # Force re-fetch (12h cache)
 bb h1 weaknesses                    # Accepted weakness/CWE types (active project)
 bb h1 weaknesses <handle>           # ...or specify a handle
-bb h1 notify discord <webhook_url>  # Configure Discord alerts (default)
+bb h1 notify discord <webhook_url>  # Configure Discord alerts (default for all)
 bb h1 notify discord-scope <url>    # Scope changes → dedicated channel
 bb h1 notify discord-programs <url> # New programs → dedicated channel
+bb h1 notify discord-vulns <url>    # Vuln lifecycle → dedicated channel
+bb h1 notify discord-ingest <url>   # Scan imports → dedicated channel
+bb h1 notify verbosity <level>      # Set detail level (minimal/summary/verbose)
 bb h1 notify desktop on             # Enable desktop notifications
 bb h1 notify test                   # Test all configured channels
 bb h1 notify status                 # Show notification channel status
@@ -274,24 +277,32 @@ bb dashboard                        # Combined local + H1 dashboard
 Set up Discord alerts so you never miss a scope change or new program:
 
 ```bash
-# 1. Configure separate Discord channels (recommended)
-bb h1 notify discord-scope <scope_channel_webhook_url>
-bb h1 notify discord-programs <programs_channel_webhook_url>
-
-# Or use a single channel for everything
+# 1. Set a single default webhook (all events use this as fallback)
 bb h1 notify discord <webhook_url>
 
-# 2. Env vars work too (stays off git)
-export BBRADAR_DISCORD_SCOPE_WEBHOOK="https://discord.com/api/webhooks/..."
-export BBRADAR_DISCORD_PROGRAMS_WEBHOOK="https://discord.com/api/webhooks/..."
+# Or configure separate channels per event type
+bb h1 notify discord-scope <url>      # scope changes
+bb h1 notify discord-vulns <url>      # critical/high findings, status changes, bounties
+bb h1 notify discord-ingest <url>     # scan import summaries
+bb h1 notify discord-programs <url>   # new H1 programs
 
-# 3. Enable desktop popups too (requires libnotify / notify-send)
+# 2. Env vars work too (stays off git)
+export BBRADAR_DISCORD_WEBHOOK="https://discord.com/api/webhooks/..."
+export BBRADAR_DISCORD_SCOPE_WEBHOOK="https://discord.com/api/webhooks/..."
+export BBRADAR_DISCORD_VULNS_WEBHOOK="https://discord.com/api/webhooks/..."
+export BBRADAR_DISCORD_INGEST_WEBHOOK="https://discord.com/api/webhooks/..."
+
+# 3. Control detail level (default: minimal — no PII, project IDs only)
+bb h1 notify verbosity summary    # includes tool names and vuln types
+bb h1 notify verbosity verbose    # also includes project names
+
+# 4. Enable desktop popups too (requires libnotify / notify-send)
 bb h1 notify desktop on
 
-# 4. Test it
+# 5. Test it
 bb h1 notify test
 
-# 5. Run manually or from cron
+# 6. Run manually or from cron
 bb h1 monitor --auto-import
 
 # Cron: check every 15 minutes

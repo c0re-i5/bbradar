@@ -192,7 +192,7 @@ def ingest_data(data: str, project_id: int, tool_hint: str = None,
 
     skipped = total_parsed - len(findings) - dup_count - out_of_scope_count
 
-    return {
+    result = {
         "tool": tool,
         "file": filename,
         "total_parsed": total_parsed,
@@ -204,6 +204,18 @@ def ingest_data(data: str, project_id: int, tool_hint: str = None,
         "create_errors": create_errors,
         "findings": findings if dry_run else [],
     }
+
+    # Notify on new findings (pass findings for severity breakdown even on non-dry-run)
+    if not dry_run and created_ids:
+        try:
+            from .notifier import notify_ingest_complete
+            notif_result = dict(result)
+            notif_result["findings"] = findings  # always include for severity count
+            notify_ingest_complete(notif_result, project_id, db_path=db_path)
+        except Exception:
+            pass  # never let notification failure break ingest
+
+    return result
 
 
 def get_ingest_summary(project_id: int, db_path=None) -> dict:

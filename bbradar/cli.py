@@ -613,7 +613,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_notify = sp_h1.add_parser("notify", help="Configure notification channels")
     p_notify.add_argument("channel", nargs="?",
                           choices=["discord", "discord-scope", "discord-programs",
-                                   "desktop", "status", "test"],
+                                   "discord-vulns", "discord-ingest",
+                                   "desktop", "verbosity", "status", "test"],
                           default="status", help="Channel to configure")
     p_notify.add_argument("value", nargs="?", default=None,
                           help="Webhook URL or enable/disable")
@@ -2525,12 +2526,17 @@ def cmd_h1(args):
         print(f"\n  Summary: {len(results)} programs checked, {total_changes} total changes.\n")
 
     elif args.subcmd == "notify":
-        if args.channel in ("discord", "discord-scope", "discord-programs"):
+        if args.channel in ("discord", "discord-scope", "discord-programs",
+                            "discord-vulns", "discord-ingest"):
             event = None
             if args.channel == "discord-scope":
                 event = "scope"
             elif args.channel == "discord-programs":
                 event = "programs"
+            elif args.channel == "discord-vulns":
+                event = "vulns"
+            elif args.channel == "discord-ingest":
+                event = "ingest"
             if args.value:
                 err = notifier.configure_discord(args.value, event=event)
                 if err:
@@ -2556,6 +2562,19 @@ def cmd_h1(args):
                     print(f"  Set via env var: export {env_var}=<url>")
                     print(f"  Or via command:  bb h1 notify {args.channel} <webhook_url>\n")
 
+        elif args.channel == "verbosity":
+            if args.value:
+                err = notifier.configure_verbosity(args.value)
+                if err:
+                    print(f"\n  ✗ {err}\n")
+                else:
+                    print(f"\n  ✓ Notification verbosity set to '{args.value}'.\n")
+            else:
+                level = notifier._get_verbosity()
+                print(f"\n  Notification verbosity: {level}")
+                print(f"  Options: minimal (default), summary, verbose")
+                print(f"  Set via: bb h1 notify verbosity <level>\n")
+
         elif args.channel == "desktop":
             if args.value in ("on", "enable", "true", "1", None):
                 notifier.configure_desktop(True)
@@ -2576,7 +2595,9 @@ def cmd_h1(args):
             any_configured = False
             for key, label in [("discord", "Discord (default)"),
                                ("discord_scope", "Discord (scope)"),
-                               ("discord_programs", "Discord (programs)")]:
+                               ("discord_programs", "Discord (programs)"),
+                               ("discord_vulns", "Discord (vulns)"),
+                               ("discord_ingest", "Discord (ingest)")]:
                 d = status[key]
                 if d['configured'] and not d.get('uses_default'):
                     any_configured = True
@@ -2603,26 +2624,33 @@ def cmd_h1(args):
             status = notifier.get_status()
             print("\n  Notification Channels:\n")
             d = status['discord']
-            print(f"    Discord (default):  {'✓ configured' if d['configured'] else '✗ not configured'}" +
+            print(f"    Discord (default):    {'✓ configured' if d['configured'] else '✗ not configured'}" +
                   (f" (via {d['source']})" if d['configured'] else ""))
             ds = status['discord_scope']
             if ds['configured'] and not ds.get('uses_default'):
-                print(f"    Discord (scope):    ✓ configured (via {ds['source']})")
+                print(f"    Discord (scope):      ✓ configured (via {ds['source']})")
             elif ds['configured']:
-                print(f"    Discord (scope):    → using default")
+                print(f"    Discord (scope):      → using default")
             else:
-                print(f"    Discord (scope):    ✗ not configured")
-            dp = status['discord_programs']
-            if dp['configured'] and not dp.get('uses_default'):
-                print(f"    Discord (programs): ✓ configured (via {dp['source']})")
-            elif dp['configured']:
-                print(f"    Discord (programs): → using default")
-            else:
-                print(f"    Discord (programs): ✗ not configured")
-            print(f"    Desktop:            {'✓ enabled' if status['desktop']['enabled'] else '✗ disabled'}")
+                print(f"    Discord (scope):      ✗ not configured")
+            for key, chan_label in [("discord_programs", "Discord (programs): "),
+                                   ("discord_vulns", "Discord (vulns):    "),
+                                   ("discord_ingest", "Discord (ingest):   ")]:
+                ch = status[key]
+                if ch['configured'] and not ch.get('uses_default'):
+                    print(f"    {chan_label}: ✓ configured (via {ch['source']})")
+                elif ch['configured']:
+                    print(f"    {chan_label}: → using default")
+                else:
+                    print(f"    {chan_label}: ✗ not configured")
+            print(f"    Desktop:              {'✓ enabled' if status['desktop']['enabled'] else '✗ disabled'}")
+            print(f"    Verbosity:            {status['verbosity']}")
             print(f"\n  Configure: bb h1 notify discord <url>           # default for all")
             print(f"             bb h1 notify discord-scope <url>     # scope changes")
             print(f"             bb h1 notify discord-programs <url>  # new programs")
+            print(f"             bb h1 notify discord-vulns <url>     # vuln lifecycle")
+            print(f"             bb h1 notify discord-ingest <url>    # scan imports")
+            print(f"             bb h1 notify verbosity <level>       # minimal/summary/verbose")
             print(f"             bb h1 notify desktop on")
             print(f"  Test:      bb h1 notify test\n")
 
