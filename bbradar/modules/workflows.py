@@ -7,6 +7,7 @@ automatically ingested into the database.
 """
 
 import json
+import shlex
 import time
 from datetime import datetime
 from pathlib import Path
@@ -147,12 +148,17 @@ def run_workflow(name: str, target_id: int, project_id: int = None,
         timeout = step.get("timeout", 300)
         parser = step.get("parser", "lines")  # lines | json | nmap_grep
 
-        # Substitute variables in command
-        command = command_template.replace("{{target}}", target_value)
-        command = command.replace("{{domain}}", target_value)
+        # Substitute variables in command — build as list to prevent injection
+        cmd_parts = shlex.split(command_template)
+        cmd_args = []
+        for part in cmd_parts:
+            cmd_args.append(
+                part.replace("{{target}}", target_value)
+                    .replace("{{domain}}", target_value)
+            )
 
         output_lines.append(f"\n[Step {i}/{len(steps)}] {step_name}")
-        output_lines.append(f"  Command: {command}")
+        output_lines.append(f"  Command: {' '.join(cmd_args)}")
 
         if dry_run:
             output_lines.append("  (dry run — skipped)")
@@ -161,7 +167,7 @@ def run_workflow(name: str, target_id: int, project_id: int = None,
 
         output_lines.append(f"  Running...")
         start = time.time()
-        rc, stdout, stderr = run_tool(command, timeout=timeout)
+        rc, stdout, stderr = run_tool(cmd_args, timeout=timeout)
         elapsed = time.time() - start
         output_lines.append(f"  Completed in {elapsed:.1f}s (exit code: {rc})")
 

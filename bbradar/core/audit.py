@@ -49,7 +49,7 @@ def get_audit_stats(db_path=None) -> dict:
             "SELECT action, count(*) as cnt FROM audit_log GROUP BY action ORDER BY cnt DESC"
         ):
             by_action[row["action"]] = row["cnt"]
-    return {"total": total, "oldest": oldest, "by_action": by_action}
+    return {"total": total, "oldest": oldest or "(none)", "by_action": by_action}
 
 
 def purge_audit_log(days: int = 90, db_path=None) -> int:

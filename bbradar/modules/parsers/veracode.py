@@ -4,7 +4,7 @@ Veracode output parser.
 Handles Veracode XML detailed report format (detailedreport.do export).
 """
 
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 from . import register_parser, make_finding
 
 TOOL_NAME = "veracode"

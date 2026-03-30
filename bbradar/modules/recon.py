@@ -16,7 +16,12 @@ from ..core.utils import run_tool
 
 # Regex for validating domains/IPs/CIDRs before passing to external tools
 _SAFE_TARGET_RE = re.compile(
-    r'^[a-zA-Z0-9._:/%\[\]-]+$'
+    r'^[a-zA-Z0-9._:\[\]-]+$'
+)
+
+# Allowlist for extra_args characters — rejects shell metacharacters and path traversal
+_SAFE_EXTRA_ARGS_RE = re.compile(
+    r'^[a-zA-Z0-9 _.,:/@=\-]+$'
 )
 
 VALID_DATA_TYPES = {
@@ -161,13 +166,25 @@ def _validate_target(value: str) -> str:
     return value
 
 
+def _validate_extra_args(extra_args: str) -> list[str]:
+    """Validate and split extra CLI arguments for external tools."""
+    if not extra_args or not extra_args.strip():
+        return []
+    if not _SAFE_EXTRA_ARGS_RE.match(extra_args):
+        raise ValueError(
+            f"Unsafe characters in extra_args: {extra_args!r}. "
+            f"Only alphanumerics, spaces, hyphens, dots, colons, commas, slashes, @, = are allowed."
+        )
+    return shlex.split(extra_args)
+
+
 def ingest_subfinder(target_id: int, domain: str, extra_args: str = "",
                      timeout: int = 300, db_path=None) -> int:
     """Run subfinder and ingest results."""
     domain = _validate_target(domain)
     cmd = ["subfinder", "-d", domain, "-silent"]
     if extra_args:
-        cmd.extend(shlex.split(extra_args))
+        cmd.extend(_validate_extra_args(extra_args))
     rc, stdout, stderr = run_tool(cmd, timeout=timeout)
     if rc != 0 and not stdout.strip():
         raise RuntimeError(f"subfinder failed: {stderr}")
@@ -181,7 +198,7 @@ def ingest_nmap(target_id: int, target_value: str, extra_args: str = "-sV -sC",
     target_value = _validate_target(target_value)
     cmd = ["nmap"]
     if extra_args:
-        cmd.extend(shlex.split(extra_args))
+        cmd.extend(_validate_extra_args(extra_args))
     cmd.extend([target_value, "-oG", "-"])
     rc, stdout, stderr = run_tool(cmd, timeout=timeout)
     count = 0
@@ -213,7 +230,7 @@ def ingest_httpx(target_id: int, input_file: str = None, targets: list[str] = No
     """Run httpx and ingest live URLs and tech data."""
     import subprocess as _subprocess
 
-    extra = shlex.split(extra_args) if extra_args else []
+    extra = _validate_extra_args(extra_args) if extra_args else []
     if input_file:
         cmd = ["httpx", "-l", str(input_file)] + extra
         rc, stdout, stderr = run_tool(cmd, timeout=timeout)

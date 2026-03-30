@@ -144,12 +144,15 @@ def ingest_data(data: str, project_id: int, tool_hint: str = None,
     if not findings:
         return _empty_result(tool, filename)
 
+    total_before_severity = len(findings)
+
     # Step 3: Filter by minimum severity
     sev_order = {"critical": 5, "high": 4, "medium": 3, "low": 2, "informational": 1}
     min_sev_val = sev_order.get(min_severity, 0)
     if min_sev_val > 1:
         findings = [f for f in findings if sev_order.get(f.get("severity", "informational"), 0) >= min_sev_val]
 
+    severity_filtered = total_before_severity - len(findings)
     total_parsed = len(findings)
 
     # Step 4: Deduplicate against existing project vulns + within batch
@@ -195,7 +198,8 @@ def ingest_data(data: str, project_id: int, tool_hint: str = None,
     result = {
         "tool": tool,
         "file": filename,
-        "total_parsed": total_parsed,
+        "total_parsed": total_before_severity,
+        "severity_filtered": severity_filtered,
         "new": len(findings),
         "duplicates": dup_count,
         "out_of_scope": out_of_scope_count,

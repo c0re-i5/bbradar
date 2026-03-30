@@ -5,7 +5,7 @@ Handles ZAP JSON reports and XML reports (traditional and modern formats).
 """
 
 import json
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 from . import register_parser, make_finding
 
 TOOL_NAME = "zap"

@@ -109,7 +109,7 @@ def validate_webhook_url(url: str) -> str | None:
     parsed = urlparse(url.strip())
     if parsed.scheme != "https":
         return "Webhook URL must use HTTPS"
-    if not parsed.hostname or not parsed.hostname.endswith("discord.com"):
+    if not parsed.hostname or (parsed.hostname != "discord.com" and not parsed.hostname.endswith(".discord.com")):
         return "Webhook URL must be a discord.com URL"
     if not parsed.path.startswith("/api/webhooks/"):
         return "Webhook URL must start with /api/webhooks/"

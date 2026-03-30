@@ -420,6 +420,10 @@ def _md_to_html(md_content: str, title: str = "BBRadar Report") -> str:
         import html
         body = f"<pre>{html.escape(md_content)}</pre>"
 
+    # Sanitize: strip <script> tags from rendered HTML to prevent XSS
+    import re as _re
+    body = _re.sub(r'<script[^>]*>.*?</script>', '', body, flags=_re.DOTALL | _re.IGNORECASE)
+
     import html as html_mod
     safe_title = html_mod.escape(title)
     return f"""<!DOCTYPE html>

@@ -194,10 +194,11 @@ def add_evidence(vuln_id: int, file_path: str, db_path=None) -> bool:
     fp = _Path(file_path)
 
     # Validate file exists and size limit
-    if fp.exists():
-        max_size = 50 * 1024 * 1024  # 50 MB
-        if fp.stat().st_size > max_size:
-            raise ValueError(
+    if not fp.exists():
+        raise FileNotFoundError(f"Evidence file not found: {file_path}")
+    max_size = 50 * 1024 * 1024  # 50 MB
+    if fp.stat().st_size > max_size:
+        raise ValueError(
                 f"Evidence file too large ({fp.stat().st_size / 1024 / 1024:.1f} MB). "
                 f"Maximum: {max_size / 1024 / 1024:.0f} MB"
             )

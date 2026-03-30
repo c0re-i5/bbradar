@@ -603,7 +603,8 @@ def _matches(rule: dict, value: str) -> bool:
 
     elif pattern_type == "regex":
         try:
-            return bool(re.search(pattern, value, re.IGNORECASE))
+            # Limit input length to prevent ReDoS on long strings
+            return bool(re.search(pattern, value[:4096], re.IGNORECASE))
         except re.error:
             return False
 
@@ -657,9 +658,11 @@ def _cidr_match(pattern: str, value: str) -> bool:
     ip_str = _strip_protocol(ip_str)
     ip_str = _extract_host(ip_str)
 
-    # Remove port
+    # Remove port — but not for bare IPv6 addresses
     if ":" in ip_str and not ip_str.startswith("["):
-        ip_str = ip_str.rsplit(":", 1)[0]
+        # Only strip port if this looks like host:port (single colon), not IPv6
+        if ip_str.count(":") == 1:
+            ip_str = ip_str.rsplit(":", 1)[0]
 
     try:
         addr = ipaddress.ip_address(ip_str)
@@ -703,7 +706,11 @@ def _validate_pattern(pattern: str, pattern_type: str):
         except re.error as e:
             raise ValueError(f"Invalid regex pattern: {e}")
         # Basic ReDoS protection: reject patterns with nested quantifiers
-        if re.search(r'(\.\*|\.\+|\[.*\])[*+?]\)?[*+?]', pattern):
+        if re.search(r'(\(.*[*+].*\))[*+?]', pattern):
+            raise ValueError(
+                "Regex pattern rejected: nested quantifiers may cause catastrophic backtracking"
+            )
+        if re.search(r'(\.[*+]|\[.*\])[*+?]\)?[*+?]', pattern):
             raise ValueError(
                 "Regex pattern rejected: nested quantifiers may cause catastrophic backtracking"
             )

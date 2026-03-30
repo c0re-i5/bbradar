@@ -5,7 +5,7 @@ Handles Nmap XML output (-oX).  Extracts open ports, service versions,
 OS detection, and NSE script findings.
 """
 
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 from . import register_parser, make_finding
 
 TOOL_NAME = "nmap"

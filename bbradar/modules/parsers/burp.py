@@ -6,7 +6,7 @@ or full scan export in the Scanner tab).
 """
 
 import html
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 from . import register_parser, make_finding
 
 TOOL_NAME = "burp"

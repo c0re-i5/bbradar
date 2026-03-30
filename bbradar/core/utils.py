@@ -169,10 +169,10 @@ def validate_url(value: str) -> str | None:
     if not value:
         return "URL is empty"
     parsed = urlparse(value)
-    if parsed.scheme not in ("http", "https", ""):
+    if parsed.scheme not in ("http", "https"):
         return f"Invalid scheme '{parsed.scheme}' — expected http or https"
-    if not parsed.netloc and not parsed.path:
-        return "URL has no host or path"
+    if not parsed.netloc:
+        return "URL has no host"
     return None
 
 
@@ -229,4 +229,4 @@ def normalize_cwe(cwe_input: str) -> str:
         num = int(cleaned)
         return f"CWE-{num}"
     except ValueError:
-        return cwe_input  # Return as-is if can't parse
+        return None  # Unparseable CWE input

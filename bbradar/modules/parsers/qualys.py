@@ -6,7 +6,7 @@ Handles Qualys CSV and XML scan report exports from Qualys WAS and VM.
 
 import csv
 import io
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 from . import register_parser, make_finding
 
 TOOL_NAME = "qualys"

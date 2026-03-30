@@ -455,6 +455,13 @@ bbradar/
 - YAML parsed with `yaml.safe_load()` only
 - HackerOne credentials support environment variables (avoid plaintext on disk)
 - Concurrent access protection with SQLite busy timeout
+- XML parsers use `defusedxml` to prevent XXE (XML External Entity) attacks
+- Webhook URLs validated against exact domain matching (no lookalike bypasses)
+- Workflow engine builds commands as argument lists, not shell strings
+- Recon extra args validated against a safe-character allowlist
+- Scope regex patterns checked for ReDoS (catastrophic backtracking) before use
+- HTML reports sanitized to strip `<script>` tags
+- Evidence path traversal protection via safe-path checks on symlinks
 
 ## Legal
 

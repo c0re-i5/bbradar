@@ -154,5 +154,5 @@ class TestNormalizeCWE:
         assert normalize_cwe(None) is None
 
     def test_invalid_nonnumeric(self):
-        # Returns as-is if can't parse
-        assert normalize_cwe("not-a-cwe") == "NOT-A-CWE"
+        # Returns None for unparseable input
+        assert normalize_cwe("not-a-cwe") is None

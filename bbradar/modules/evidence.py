@@ -74,7 +74,7 @@ def find_orphaned_files(db_path=None) -> list[dict]:
     referenced = get_referenced_evidence(db_path)
     orphans = []
     for f in ev_dir.rglob("*"):
-        if f.is_file():
+        if f.is_file() and _is_safe_path(f, ev_dir):
             fpath = str(f)
             rel = str(f.relative_to(ev_dir))
             # Check both absolute and relative path

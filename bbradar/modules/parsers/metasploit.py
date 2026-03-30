@@ -4,7 +4,7 @@ Metasploit output parser.
 Handles Metasploit XML export (db_export) and JSON output formats.
 """
 
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 import json
 from . import register_parser, make_finding
 

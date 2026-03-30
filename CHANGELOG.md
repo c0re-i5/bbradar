@@ -2,6 +2,60 @@
 
 All notable changes to BBRadar will be documented in this file.
 
+## [0.5.3] — 2026-03-30
+
+### Fixed
+
+- **[CRITICAL] Workflow command injection** — `run_workflow()` now builds
+  commands as argument lists instead of string substitution, preventing
+  shell metacharacter injection via target values (`workflows.py`)
+- **[CRITICAL] XXE in XML parsers** — all 8 XML-based parsers (nmap, burp,
+  acunetix, qualys, fortify, metasploit, zap, veracode) now use
+  `defusedxml.ElementTree` to block XML External Entity attacks
+- **[CRITICAL] Webhook domain spoofing** — `validate_webhook_url()` now
+  requires exact `discord.com` or `*.discord.com` hostname, rejecting
+  lookalike domains like `evil-discord.com` (`notifier.py`)
+- **[HIGH] Version mismatch** — `__init__.py` version now matches
+  `pyproject.toml` (was `0.5.0`, now `0.5.3`)
+- **[HIGH] Recon extra_args sanitization** — `ingest_nmap()`,
+  `ingest_subfinder()`, and `ingest_httpx()` now validate `extra_args`
+  against an allowlist of safe option characters (`recon.py`)
+- **[HIGH] ReDoS protection in scope regex** — improved nested-quantifier
+  detection and added 2-second `re.search` timeout via `re.fullmatch` guard
+  to prevent catastrophic backtracking (`scope.py`)
+- **[HIGH] Migration failure safety** — `get_connection()` migration loop
+  now catches `executescript` failures and does not bump `user_version`
+  on partial failure (`database.py`)
+- **[MEDIUM] Config `_deep_merge` mutation** — switched from shallow
+  `dict.copy()` to `copy.deepcopy()` to prevent callers from mutating
+  the global `DEFAULTS` dict (`config.py`)
+- **[MEDIUM] Evidence orphan safe-path check** — `find_orphaned_files()`
+  now calls `_is_safe_path()` to skip symlinks escaping the evidence
+  directory (`evidence.py`)
+- **[MEDIUM] `add_evidence` accepts missing files** — now raises
+  `FileNotFoundError` instead of silently adding non-existent paths
+  (`vulns.py`)
+- **[MEDIUM] Ingest skipped-count arithmetic** — `total_parsed` is now
+  captured before severity filtering so the skipped count is always
+  non-negative (`ingest.py`)
+- **[MEDIUM] IPv6 CIDR match mis-parse** — `_cidr_match()` now correctly
+  handles bare IPv6 addresses by only stripping port suffixes from non-IPv6
+  strings (`scope.py`)
+- **[LOW] `normalize_cwe` silent failure** — returns `None` on unparseable
+  input instead of echoing the invalid string (`utils.py`)
+- **[LOW] URL validation accepts bare paths** — `validate_url()` now
+  requires `http` or `https` scheme (`utils.py`)
+- **[LOW] `get_audit_stats` None timestamp** — returns `"(none)"` instead
+  of `None` when audit log is empty (`audit.py`)
+- **[LOW] Recon `_SAFE_TARGET_RE` too permissive** — tightened regex to
+  reject path-traversal sequences (`recon.py`)
+- **[LOW] HTML report XSS** — `_md_to_html()` now sanitizes the markdown
+  body by stripping `<script>` tags before rendering (`reports.py`)
+
+### Added
+
+- `defusedxml` added as a required dependency in `pyproject.toml`
+
 ## [0.5.2] — 2026-03-28
 
 ### Added

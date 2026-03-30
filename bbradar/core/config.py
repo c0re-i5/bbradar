@@ -5,6 +5,7 @@ Stores settings in ~/.bbradar/config.yaml. All paths and preferences
 are configurable; sensible defaults are provided.
 """
 
+import copy
 import os
 from pathlib import Path
 
@@ -50,7 +51,7 @@ DEFAULTS = {
 
 def _deep_merge(base: dict, override: dict) -> dict:
     """Recursively merge override into base, returning new dict."""
-    merged = base.copy()
+    merged = copy.deepcopy(base)
     for key, value in override.items():
         if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
             merged[key] = _deep_merge(merged[key], value)

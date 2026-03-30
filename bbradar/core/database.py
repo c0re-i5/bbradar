@@ -41,7 +41,11 @@ def get_connection(db_path: Path | None = None):
         if 0 < current < latest:
             for version, _desc, sql in MIGRATIONS:
                 if version > current:
-                    conn.executescript(sql)
+                    try:
+                        conn.executescript(sql)
+                    except Exception:
+                        conn.rollback()
+                        break
                     conn.execute(f"PRAGMA user_version = {version}")
                     conn.commit()
                     current = version
