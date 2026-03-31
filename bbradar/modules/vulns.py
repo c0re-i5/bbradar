@@ -20,7 +20,7 @@ STATUS_TRANSITIONS = {
     "new":       {"confirmed", "duplicate", "wontfix", "reported"},
     "confirmed": {"reported", "duplicate", "wontfix"},
     "reported":  {"accepted", "duplicate", "wontfix", "resolved"},
-    "accepted":  {"resolved"},
+    "accepted":  {"resolved", "duplicate"},
     "duplicate": {"new"},          # reopen if wrongly marked duplicate
     "resolved":  {"new"},          # reopen if regression
     "wontfix":   {"new"},          # reopen if reconsidered
@@ -216,7 +216,6 @@ def add_evidence(vuln_id: int, file_path: str, db_path=None) -> bool:
 def get_vuln_stats(project_id: int = None, db_path=None) -> dict:
     """Get vulnerability statistics."""
     with get_connection(db_path) as conn:
-        base = "SELECT {} FROM vulns"
         where = " WHERE project_id = ?" if project_id else ""
         params = [project_id] if project_id else []
 

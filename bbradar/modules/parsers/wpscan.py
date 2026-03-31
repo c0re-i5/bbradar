@@ -197,10 +197,18 @@ def _parse_vuln(vuln: dict, component: str, target_url: str, host: str) -> dict 
     if fixed_in:
         desc += f"\nFixed in version: {fixed_in}"
 
+    # Derive severity from vuln type keywords
+    severity = "high"
+    combined_lower = f"{title} {vuln_type_raw}".lower()
+    if any(k in combined_lower for k in ("rce", "remote code", "deserialization", "sql injection")):
+        severity = "critical"
+    elif any(k in combined_lower for k in ("info", "disclosure", "version", "readme", "enumer")):
+        severity = "medium"
+
     return make_finding(
         tool=TOOL_NAME,
         title=f"WPScan: {title[:80]}",
-        severity="high",
+        severity=severity,
         vuln_type=vuln_type,
         description=desc,
         endpoint=target_url,

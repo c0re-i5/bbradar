@@ -8,6 +8,7 @@ Integrates with common Kali tools for automated data ingestion.
 import json
 import re
 import shlex
+import sqlite3
 from pathlib import Path
 
 from ..core.database import get_connection
@@ -45,7 +46,7 @@ def add_recon(target_id: int, data_type: str, value: str,
                 (target_id, data_type, value.strip(), source_tool, raw_output, confidence),
             )
             rid = cursor.lastrowid
-        except Exception:
+        except sqlite3.IntegrityError:
             return None  # duplicate
     log_action("created", "recon", rid,
                {"target_id": target_id, "data_type": data_type, "source_tool": source_tool}, db_path)
@@ -62,12 +63,13 @@ def bulk_add_recon(target_id: int, data_type: str, values: list[str],
             if not val:
                 continue
             try:
-                conn.execute(
+                cursor = conn.execute(
                     """INSERT OR IGNORE INTO recon_data (target_id, data_type, value, source_tool)
                        VALUES (?, ?, ?, ?)""",
                     (target_id, data_type, val, source_tool),
                 )
-                count += 1
+                if cursor.rowcount > 0:
+                    count += 1
             except Exception as e:
                 import sys
                 print(f"  warning: skipped recon '{val}': {e}", file=sys.stderr)

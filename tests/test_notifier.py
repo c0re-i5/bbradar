@@ -527,7 +527,7 @@ class TestNotifyVulnStatusChange:
            return_value={"desktop": {"enabled": False}})
     @patch("bbradar.modules.notifier.log_action")
     def test_fires_on_rejected(self, mock_log, _, __, mock_send):
-        result = notifier.notify_vuln_status_change(1, 3, "new", "rejected")
+        result = notifier.notify_vuln_status_change(1, 3, "new", "wontfix")
         assert result["discord"] is True
 
     @patch("bbradar.modules.notifier._send_discord", return_value=True)

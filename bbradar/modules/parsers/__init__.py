@@ -196,9 +196,9 @@ def detect_tool(filepath: str | None = None, data: str | None = None,
     signatures = [
         ("nuclei", ['"template-id"', '"template"', '"matcher-name"', '"matched-at"']),
         ("burp", ['<issues burpVersion=', '<issue>', '<type>',
-                   '<?xml', "<items", "<item><url>"]),
+                   "<items", "<item><url>"]),
         ("zap", ['"@version"', '"site"', '"alerts"', '"alertRef"']),
-        ("nmap", ['<nmaprun', 'Nmap done', '<?xml', '<host starttime=']),
+        ("nmap", ['<nmaprun', 'Nmap done', '<host starttime=', 'scanner="nmap"']),
         ("wpscan", ['"interesting_findings"', '"wp_version"', '"target_url"', '"effective_url"']),
         ("testssl", ['"id"', '"severity"', '"finding"', '"ip"', '"cve"']),
         ("semgrep", ['"results"', '"check_id"', '"path"', '"start"', '"end"', '"extra"']),
@@ -221,7 +221,7 @@ def detect_tool(filepath: str | None = None, data: str | None = None,
     if stripped.startswith("<?xml") or stripped.startswith("<"):
         if "<nmaprun" in content:
             return "nmap"
-        if "burpVersion" in content or ("<issues" in content and "<type>" in content):
+        if "burpVersion" in content:
             return "burp"
         if "<OWASPZAPReport" in content or ("<site" in content and "<alerts" in content):
             return "zap"
@@ -237,8 +237,10 @@ def detect_tool(filepath: str | None = None, data: str | None = None,
                     return "nuclei"
                 if "interesting_findings" in keys or "wp_version" in keys:
                     return "wpscan"
-                if "results" in keys and "check_id" in str(obj.get("results", "")[:200] if isinstance(obj.get("results"), str) else ""):
-                    return "semgrep"
+                if "results" in keys:
+                    results = obj.get("results")
+                    if isinstance(results, list) and results and "check_id" in str(results[0])[:500]:
+                        return "semgrep"
         except (json.JSONDecodeError, ValueError):
             pass
 

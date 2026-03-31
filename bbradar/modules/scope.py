@@ -129,8 +129,14 @@ def update_rule(rule_id: int, db_path=None, **kwargs) -> bool:
     updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
     if not updates:
         return False
-    if "pattern" in updates and "pattern_type" in updates:
-        _validate_pattern(updates["pattern"], updates["pattern_type"])
+    # Validate pattern+pattern_type pair even on partial update
+    if "pattern" in updates or "pattern_type" in updates:
+        with get_connection(db_path) as conn:
+            existing = conn.execute("SELECT pattern, pattern_type FROM scope_rules WHERE id = ?", (rule_id,)).fetchone()
+        if existing:
+            pat = updates.get("pattern", existing["pattern"])
+            pat_type = updates.get("pattern_type", existing["pattern_type"])
+            _validate_pattern(pat, pat_type)
     set_clause = ", ".join(f"{k} = ?" for k in updates)
     values = list(updates.values()) + [rule_id]
     with get_connection(db_path) as conn:

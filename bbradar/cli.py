@@ -590,8 +590,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sp_h1.add_parser("search", help="Search for bug bounty programs")
     p.add_argument("query", nargs="?", default=None, help="Search text")
-    p.add_argument("--bounties-only", action="store_true", default=True,
-                   help="Only show paid programs (default)")
+    p.add_argument("--bounties-only", action="store_true", default=False,
+                   help="Only show paid programs")
 
     p = sp_h1.add_parser("import", help="Import a H1 program as a BBRadar project")
     p.add_argument("handle", help="HackerOne program handle (e.g. 'security')")
@@ -1579,7 +1579,9 @@ def cmd_kb(args):
         for r in rows:
             ransomware = " 🔒" if r['known_ransomware'] and r['known_ransomware'].lower() not in ('unknown', '') else ""
             print(f"  {r['date_added']}  {r['cve_id']:18s} {r['vendor']:15s} {r['product']:15s} {r['name'][:35]}{ransomware}")
-        total = conn.execute("SELECT COUNT(*) as c FROM kb_kev").fetchone()["c"]
+        total = 0
+        with knowledgebase.get_connection() as conn2:
+            total = conn2.execute("SELECT COUNT(*) as c FROM kb_kev").fetchone()["c"]
         print(f"\n  Showing {len(rows)} of {total} entries (--limit to change)")
         print(f"  🔒 = used in ransomware campaigns")
         print(f"  Use 'bb kb cve <CVE-ID>' for full details")

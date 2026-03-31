@@ -736,7 +736,7 @@ def notify_vuln_status_change(vuln_id: int, project_id: int,
     Also fires when ``bounty_amount`` is set.
     No finding titles or detail are included.
     """
-    notable_states = {"accepted", "rejected", "duplicate"}
+    notable_states = {"accepted", "wontfix", "duplicate"}
     has_bounty = bounty_amount is not None and bounty_amount > 0
     if new_status not in notable_states and not has_bounty:
         return {"discord": False, "desktop": False}

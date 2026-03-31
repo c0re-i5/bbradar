@@ -55,10 +55,23 @@ def load_workflow(name: str) -> dict:
         if path.exists():
             with open(path) as f:
                 return yaml.safe_load(f)
-    # Try as absolute path
+    # Try as a relative path within the workflow directory only
     path = Path(name)
+    if path.is_absolute():
+        # Validate it lives inside the workflow directory
+        try:
+            path.resolve().relative_to(WORKFLOW_DIR.resolve())
+        except ValueError:
+            raise FileNotFoundError(
+                f"Workflow not found: {name} (absolute paths must be inside {WORKFLOW_DIR})"
+            )
     if path.exists():
-        with open(path) as f:
+        resolved = path.resolve()
+        try:
+            resolved.relative_to(WORKFLOW_DIR.resolve())
+        except ValueError:
+            raise FileNotFoundError(f"Workflow not found: {name}")
+        with open(resolved) as f:
             return yaml.safe_load(f)
     raise FileNotFoundError(f"Workflow not found: {name}")
 

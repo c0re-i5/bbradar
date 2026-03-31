@@ -100,7 +100,14 @@ def parse(data: str, filename: str = "") -> list[dict]:
         kingdom = ""
         if class_info is not None:
             kingdom = class_info.findtext(f"{ns}Kingdom", "")
-
+            # Try standard ClassInfo CWE locations
+            raw_cwe = (class_info.findtext(f"{ns}CweId", "")
+                       or class_info.findtext(f"{ns}ClassID", "")
+                       or class_info.findtext("CweId", "")
+                       or class_info.findtext("ClassID", ""))
+            if raw_cwe:
+                raw_cwe = raw_cwe.strip()
+                cwe_id = f"CWE-{raw_cwe}" if not raw_cwe.startswith("CWE") else raw_cwe
         # Map vuln type
         vuln_type = "other"
         title_lower = title.lower()
@@ -139,7 +146,9 @@ def parse(data: str, filename: str = "") -> list[dict]:
         name = issue.findtext("Category", "") or issue.findtext("Name", "")
         severity_raw = issue.findtext("Friority", "") or issue.findtext("Severity", "")
         severity = _SEVERITY_MAP.get(severity_raw.lower().strip(), "medium")
-        filepath = issue.findtext("Primary/Entry/Node/SourceLocation/@path", "") or issue.findtext("File", "")
+        # ElementTree doesn't support @attr selectors in findtext
+        source_loc = issue.find("Primary/Entry/Node/SourceLocation")
+        filepath = (source_loc.get("path", "") if source_loc is not None else "") or issue.findtext("File", "")
 
         if name:
             vuln_type = "other"

@@ -43,11 +43,13 @@ def list_notes(project_id: int = None, target_id: int = None, vuln_id: int = Non
             query += " AND vuln_id = ?"
             params.append(vuln_id)
         if tag:
-            query += " AND ',' || tags || ',' LIKE ?"
-            params.append(f"%,{tag},%")
+            escaped_tag = tag.replace('%', r'\%').replace('_', r'\_')
+            query += " AND ',' || tags || ',' LIKE ? ESCAPE '\\'"
+            params.append(f"%,{escaped_tag},%")
         if search:
-            query += " AND (content LIKE ? OR title LIKE ?)"
-            params.extend([f"%{search}%", f"%{search}%"])
+            escaped_search = search.replace('%', r'\%').replace('_', r'\_')
+            query += " AND (content LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\')"
+            params.extend([f"%{escaped_search}%", f"%{escaped_search}%"])
         query += " ORDER BY updated_at DESC LIMIT ?"
         params.append(limit)
         rows = conn.execute(query, params).fetchall()

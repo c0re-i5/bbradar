@@ -108,18 +108,14 @@ def _try_json(data: str) -> list[dict] | None:
             alerts = [alerts]
 
         for alert in alerts:
-            finding = _parse_alert(alert, host, port)
-            if finding:
-                findings.append(finding)
+            findings.extend(_parse_alert(alert, host, port))
 
     # Also handle flat alert list format
     if not findings:
         alerts = parsed.get("alerts", parsed.get("alert", []))
         if isinstance(alerts, list):
             for alert in alerts:
-                finding = _parse_alert(alert, "", None)
-                if finding:
-                    findings.append(finding)
+                findings.extend(_parse_alert(alert, "", None))
 
     return findings if findings else None
 
@@ -223,12 +219,12 @@ def _parse_alert(alert: dict, default_host: str, default_port: int | None) -> di
             ))
 
         if results:
-            return results[0]  # Return first, rest will be deduped
-        return None
+            return results
+        return []
     else:
         # No instances — single finding
         url = alert.get("url", alert.get("uri", ""))
-        return make_finding(
+        return [make_finding(
             tool=TOOL_NAME,
             title=f"{name}" + (f" on {url[:80]}" if url else ""),
             severity=severity,
@@ -241,7 +237,7 @@ def _parse_alert(alert: dict, default_host: str, default_port: int | None) -> di
             references=_extract_refs(reference),
             tags=["zap"],
             raw_data={"alert_name": name},
-        )
+        )]
 
 
 def _parse_xml_alert(alert_el, default_host: str, default_port: int | None) -> dict | None:

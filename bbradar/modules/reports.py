@@ -420,9 +420,17 @@ def _md_to_html(md_content: str, title: str = "BBRadar Report") -> str:
         import html
         body = f"<pre>{html.escape(md_content)}</pre>"
 
-    # Sanitize: strip <script> tags from rendered HTML to prevent XSS
+    # Sanitize rendered HTML to prevent stored XSS
     import re as _re
-    body = _re.sub(r'<script[^>]*>.*?</script>', '', body, flags=_re.DOTALL | _re.IGNORECASE)
+    # Strip dangerous tags entirely
+    for tag in ('script', 'iframe', 'object', 'embed', 'applet', 'form', 'base', 'link'):
+        body = _re.sub(rf'<{tag}[^>]*>.*?</{tag}>', '', body, flags=_re.DOTALL | _re.IGNORECASE)
+        body = _re.sub(rf'<{tag}[^>]*/>', '', body, flags=_re.IGNORECASE)
+    # Strip event handler attributes (on*="...")
+    body = _re.sub(r'\s+on\w+\s*=\s*["\'][^"\']*["\']', '', body, flags=_re.IGNORECASE)
+    body = _re.sub(r'\s+on\w+\s*=\s*\S+', '', body, flags=_re.IGNORECASE)
+    # Strip javascript: and data: URIs in href/src/action attributes
+    body = _re.sub(r'(href|src|action)\s*=\s*["\']\s*(javascript|data|vbscript):', r'\1="#blocked:', body, flags=_re.IGNORECASE)
 
     import html as html_mod
     safe_title = html_mod.escape(title)

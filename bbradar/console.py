@@ -180,7 +180,7 @@ class BBConsole(cmd.Cmd):
 
         # Set readline behavior
         readline.set_history_length(5000)
-        if "libedit" in readline.__doc__:
+        if readline.__doc__ and "libedit" in readline.__doc__:
             readline.parse_and_bind("bind ^I rl_complete")
         else:
             readline.parse_and_bind("tab: complete")
@@ -262,7 +262,7 @@ class BBConsole(cmd.Cmd):
 
     def do_cls(self, _arg):
         """Clear the screen."""
-        os.system("clear")
+        os.system("cls" if os.name == "nt" else "clear")
 
     def do_banner(self, _arg):
         """Show the startup banner."""

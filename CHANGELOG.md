@@ -2,6 +2,63 @@
 
 All notable changes to BBRadar will be documented in this file.
 
+## [0.5.5] — 2026-03-31
+
+### Fixed
+
+- **[HIGH] XSS in HTML reports** — `_md_to_html()` sanitizer expanded from
+  only stripping `<script>` to also removing `<iframe>`, `<object>`,
+  `<embed>`, `<applet>`, `<form>`, `<base>`, `<link>` tags plus `on*=`
+  event handlers and `javascript:`/`data:`/`vbscript:` URIs (`reports.py`)
+- **[HIGH] Path traversal in workflow loader** — `load_workflow()` now
+  validates resolved paths stay inside `WORKFLOW_DIR`, blocking absolute
+  path or `../` escapes (`workflows.py`)
+- **[HIGH] ZAP parser data loss** — `_parse_alert()` returned a single dict
+  instead of a list, silently dropping all but the first instance per alert;
+  now returns all instances (`parsers/zap.py`)
+- **[HIGH] Fortify parser missing CWE** — `cwe_id` was always empty;
+  now extracts from `CweId` and `ClassID` elements. Also fixed XPath
+  `@path` attribute access (`parsers/fortify.py`)
+- **[HIGH] Console readline crash** — `readline.__doc__` can be `None`;
+  added guard before `"libedit" in` check (`console.py`)
+- **[HIGH] Semgrep auto-detection** — was calling `.get()` on a list
+  instead of `list[0].get()`; also tightened Burp XML detection and
+  removed `<?xml` from signature boosts (`parsers/__init__.py`)
+- **[MEDIUM] Vuln state machine bypass** — `merge_vulns` set status to
+  `"duplicate"` without checking transitions; added `"duplicate"` to
+  accepted→ transitions (`vulns.py`)
+- **[MEDIUM] Notifier dead-code status** — `notable_states` contained
+  `"rejected"` which is not a valid status; changed to `"wontfix"`
+  (`notifier.py`)
+- **[MEDIUM] Recon bulk-add overcounting** — `bulk_add_recon` incremented
+  count even when `INSERT OR IGNORE` was a no-op; now checks `rowcount`
+  (`recon.py`)
+- **[MEDIUM] Recon bare exception** — `add_recon` caught `Exception`
+  instead of `sqlite3.IntegrityError` for duplicate handling (`recon.py`)
+- **[MEDIUM] Scope partial-update validation** — `update_rule` now fetches
+  the missing field from DB to validate the pattern/type pair on partial
+  updates (`scope.py`)
+- **[MEDIUM] `--bounties-only` default** — flag defaulted to `True`,
+  filtering results by default; changed to `False` (`cli.py`)
+- **[MEDIUM] KEV connection leak** — total-count query reused a closed
+  connection; now opens a separate `with` block (`cli.py`)
+- **[MEDIUM] LIKE wildcard injection** — notes search/tag queries now
+  escape `%` and `_` characters (`notes.py`)
+- **[MEDIUM] SQL table-name injection** — `_intel_cache_fresh` now
+  validates table names against an allowlist before interpolation
+  (`hackerone.py`)
+- **[MEDIUM] Burp XML false positives** — tightened detection to require
+  `burpVersion` attribute specifically (`parsers/__init__.py`)
+- **[MEDIUM] WPScan hardcoded severity** — `_parse_vuln` now derives
+  severity from vuln-type keywords instead of always returning `"high"`
+  (`parsers/wpscan.py`)
+- **[LOW] `delete_project` silent failure** — now checks `cursor.rowcount`
+  and returns `False` for non-existent project IDs (`projects.py`)
+- **[LOW] Unused variable** — removed dead `base` assignment in
+  `get_vuln_stats` (`vulns.py`)
+- **[LOW] Cross-platform `cls`** — console `do_cls` now uses `cls` on
+  Windows and `clear` elsewhere (`console.py`)
+
 ## [0.5.4] — 2026-03-31
 
 ### Added

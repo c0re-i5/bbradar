@@ -1061,6 +1061,9 @@ def get_weaknesses(handle: str) -> list[dict]:
 
 def _intel_cache_fresh(handle: str, table: str, db_path=None) -> bool:
     """Check if intel cache for a handle is fresh."""
+    _valid_tables = {"h1_hacktivity_cache", "h1_weakness_cache"}
+    if table not in _valid_tables:
+        raise ValueError(f"Invalid table: {table}")
     from ..core.database import get_connection
     with get_connection(db_path) as conn:
         row = conn.execute(
