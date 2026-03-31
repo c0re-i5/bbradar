@@ -127,6 +127,7 @@ def _ensure_loaded():
     _loaded = True
     from . import nuclei, nmap, nikto, burp, zap, ffuf, testssl, wpscan, semgrep, sqlmap
     from . import metasploit, acunetix, qualys, fortify, veracode
+    from . import masscan, gobuster, whatweb, amass, dig
     # Each module registers itself on import
 
 
@@ -165,6 +166,11 @@ def detect_tool(filepath: str | None = None, data: str | None = None,
             "qualys": ["qualys"],
             "fortify": ["fortify", "fvdl", "fpr"],
             "veracode": ["veracode", "detailedreport"],
+            "masscan": ["masscan"],
+            "gobuster": ["gobuster"],
+            "whatweb": ["whatweb"],
+            "amass": ["amass"],
+            "dig": ["dig_output", "dig_results", "dnsrecon"],
         }
         for tool, patterns in name_hints.items():
             if any(p in fname for p in patterns):
@@ -204,6 +210,10 @@ def detect_tool(filepath: str | None = None, data: str | None = None,
         ("qualys", ["<ASSET_DATA_REPORT", "<WAS_SCAN_REPORT", "QID", "VULN_INFO_LIST"]),
         ("fortify", ["<FVDL", "<Vulnerabilities>", "<ClassInfo>", "Kingdom", "Fortify"]),
         ("veracode", ["<detailedreport", "<severity>", "<flaw ", "cweid=", "Veracode"]),
+        ("masscan", ['"ip"', '"ports"', '"proto"', '"status"', "open tcp", "open udp"]),
+        ("gobuster", ["Gobuster", "Status:", "[Size:", "Dir found:", "/admin", "directory-brute"]),
+        ("whatweb", ["WhatWeb", "HTTPServer", "IP[", "Country[", "X-Powered-By"]),
+        ("amass", ['"name"', '"domain"', '"addresses"', '"sources"', "OWASP Amass"]),
     ]
 
     # For XML, try specific root elements

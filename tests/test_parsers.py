@@ -308,3 +308,238 @@ class TestNmapParser:
         # Should have at least the open port findings, and possibly insecure service
         assert "21" in titles
         assert "23" in titles
+
+
+# ===================================================================
+# Masscan parser
+# ===================================================================
+
+class TestMasscanParser:
+    def _parse(self, data):
+        p = get_parser("masscan")
+        return p.parse(data)
+
+    def test_json_format(self):
+        data = json.dumps([
+            {"ip": "10.0.0.1", "ports": [{"port": 80, "proto": "tcp", "status": "open", "service": {"name": "http"}}]},
+            {"ip": "10.0.0.1", "ports": [{"port": 443, "proto": "tcp", "status": "open", "service": {"name": "https"}}]},
+        ])
+        findings = self._parse(data)
+        assert len(findings) == 2
+        assert findings[0]["tool"] == "masscan"
+        assert findings[0]["port"] == 80
+        assert findings[1]["port"] == 443
+
+    def test_list_format(self):
+        data = "open tcp 22 10.0.0.1 1700000000\nopen tcp 80 10.0.0.1 1700000001\n"
+        findings = self._parse(data)
+        assert len(findings) == 2
+        assert findings[0]["port"] == 22
+        assert findings[1]["port"] == 80
+
+    def test_closed_ports_skipped(self):
+        data = json.dumps([
+            {"ip": "10.0.0.1", "ports": [{"port": 80, "proto": "tcp", "status": "closed"}]},
+        ])
+        findings = self._parse(data)
+        assert len(findings) == 0
+
+    def test_empty_input(self):
+        findings = self._parse("")
+        assert findings == []
+
+    def test_comments_skipped(self):
+        data = "# masscan output\nopen tcp 80 10.0.0.1 1700000000\n"
+        findings = self._parse(data)
+        assert len(findings) == 1
+
+
+# ===================================================================
+# Gobuster parser
+# ===================================================================
+
+class TestGobusterParser:
+    def _parse(self, data):
+        p = get_parser("gobuster")
+        return p.parse(data)
+
+    def test_text_format(self):
+        data = "/admin (Status: 200) [Size: 1234]\n/backup (Status: 403) [Size: 567]\n"
+        findings = self._parse(data)
+        assert len(findings) == 2
+        assert "/admin" in findings[0]["title"]
+        assert "200" in findings[0]["title"]
+
+    def test_jsonl_format(self):
+        lines = "\n".join([
+            json.dumps({"url": "/api", "status": 200, "length": 500}),
+            json.dumps({"url": "/admin", "status": 401, "length": 100}),
+        ])
+        findings = self._parse(lines)
+        assert len(findings) == 2
+
+    def test_401_is_medium(self):
+        data = json.dumps({"url": "/admin", "status": 401, "length": 0})
+        findings = self._parse(data)
+        assert len(findings) == 1
+        assert findings[0]["severity"] == "medium"
+
+    def test_404_filtered(self):
+        data = json.dumps({"url": "/missing", "status": 404, "length": 0})
+        findings = self._parse(data)
+        assert len(findings) == 0
+
+    def test_empty(self):
+        assert self._parse("") == []
+
+    def test_gobuster_banner_skipped(self):
+        data = "Gobuster v3.6\n===============\nStarting gobuster...\n/admin (Status: 200) [Size: 1234]\nFinished\n"
+        findings = self._parse(data)
+        assert len(findings) == 1
+
+
+# ===================================================================
+# WhatWeb parser
+# ===================================================================
+
+class TestWhatWebParser:
+    def _parse(self, data):
+        p = get_parser("whatweb")
+        return p.parse(data)
+
+    def test_json_format(self):
+        data = json.dumps([{
+            "target": "http://example.com",
+            "http_status": 200,
+            "plugins": {
+                "Apache": {"version": ["2.4.52"]},
+                "PHP": {"version": ["8.1.2"]},
+                "WordPress": {"version": ["6.4"]},
+            },
+        }])
+        findings = self._parse(data)
+        # Should have summary + security concern findings
+        assert len(findings) >= 1
+        tools = [f["tool"] for f in findings]
+        assert all(t == "whatweb" for t in tools)
+
+    def test_security_concerns_flagged(self):
+        data = json.dumps([{
+            "target": "http://example.com",
+            "http_status": 200,
+            "plugins": {
+                "Jenkins": {"version": ["2.440"]},
+                "phpMyAdmin": {},
+            },
+        }])
+        findings = self._parse(data)
+        severities = [f["severity"] for f in findings]
+        assert "medium" in severities  # Jenkins and phpMyAdmin are medium
+
+    def test_text_format(self):
+        data = "http://example.com [200 OK] Apache[2.4.52], PHP[8.1.2], WordPress"
+        findings = self._parse(data)
+        assert len(findings) >= 1
+        assert "example.com" in findings[0]["endpoint"]
+
+    def test_empty(self):
+        assert self._parse("") == []
+
+
+# ===================================================================
+# Amass parser
+# ===================================================================
+
+class TestAmassParser:
+    def _parse(self, data):
+        p = get_parser("amass")
+        return p.parse(data)
+
+    def test_jsonl_format(self):
+        lines = "\n".join([
+            json.dumps({"name": "sub1.example.com", "domain": "example.com", "addresses": [{"ip": "10.0.0.1"}]}),
+            json.dumps({"name": "sub2.example.com", "domain": "example.com", "addresses": [{"ip": "10.0.0.2"}]}),
+        ])
+        findings = self._parse(lines)
+        assert len(findings) == 2
+        assert findings[0]["host"] == "sub1.example.com"
+        assert "Subdomain" in findings[0]["title"]
+
+    def test_text_format(self):
+        data = "sub1.example.com\nsub2.example.com\nsub3.example.com\n"
+        findings = self._parse(data)
+        assert len(findings) == 3
+
+    def test_dedup(self):
+        data = "sub1.example.com\nsub1.example.com\n"
+        findings = self._parse(data)
+        assert len(findings) == 1
+
+    def test_banner_skipped(self):
+        data = "OWASP Amass v4.0\n---\nQuerying data sources\nsub1.example.com\n"
+        findings = self._parse(data)
+        assert len(findings) == 1
+        assert findings[0]["host"] == "sub1.example.com"
+
+    def test_empty(self):
+        assert self._parse("") == []
+
+
+# ===================================================================
+# Dig parser
+# ===================================================================
+
+class TestDigParser:
+    def _parse(self, data):
+        p = get_parser("dig")
+        return p.parse(data)
+
+    def test_answer_section(self):
+        data = textwrap.dedent("""\
+            ;; QUESTION SECTION:
+            ;example.com.			IN	A
+
+            ;; ANSWER SECTION:
+            example.com.		300	IN	A	93.184.216.34
+            example.com.		300	IN	A	93.184.216.35
+        """)
+        findings = self._parse(data)
+        assert len(findings) == 2
+        assert findings[0]["tool"] == "dig"
+        assert "A" in findings[0]["title"]
+
+    def test_cname_subdomain_takeover(self):
+        data = textwrap.dedent("""\
+            ;; ANSWER SECTION:
+            sub.example.com.	300	IN	CNAME	app.herokuapp.com.
+        """)
+        findings = self._parse(data)
+        assert len(findings) == 1
+        assert findings[0]["severity"] == "low"
+        assert "subdomain takeover" in findings[0]["description"]
+
+    def test_txt_spf_record(self):
+        data = textwrap.dedent("""\
+            ;; ANSWER SECTION:
+            example.com.		300	IN	TXT	"v=spf1 include:_spf.google.com ~all"
+        """)
+        findings = self._parse(data)
+        assert len(findings) == 1
+        assert "SPF" in findings[0]["description"]
+
+    def test_mx_record(self):
+        data = textwrap.dedent("""\
+            ;; ANSWER SECTION:
+            example.com.		300	IN	MX	10 mail.example.com.
+        """)
+        findings = self._parse(data)
+        assert len(findings) == 1
+        assert "MX" in findings[0]["title"]
+
+    def test_empty(self):
+        assert self._parse("") == []
+
+    def test_comments_only(self):
+        data = ";; Query time: 20 msec\n;; SERVER: 8.8.8.8#53(8.8.8.8)\n"
+        findings = self._parse(data)
+        assert findings == []

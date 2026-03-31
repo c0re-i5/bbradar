@@ -1,0 +1,66 @@
+name: web-audit
+description: >
+  Web application security audit workflow. Comprehensive assessment of
+  a web target including tech fingerprinting, directory brute-forcing,
+  CMS detection, vulnerability scanning, and TLS analysis.
+
+steps:
+  - name: Technology Fingerprinting (whatweb)
+    command: "whatweb {{target}} --color=never -q --log-json=-"
+    tool: whatweb
+    data_type: tech
+    parser: lines
+    timeout: 120
+    required: false
+
+  - name: Directory Brute-Force (gobuster)
+    command: "gobuster dir -u http://{{target}} -w /usr/share/wordlists/dirb/common.txt -q --no-progress"
+    tool: gobuster
+    data_type: endpoint
+    parser: lines
+    timeout: 600
+    required: false
+
+  - name: Web Fuzzing (ffuf)
+    command: "ffuf -u http://{{target}}/FUZZ -w /usr/share/wordlists/dirb/big.txt -s -mc 200,301,302,401,403"
+    tool: ffuf
+    data_type: endpoint
+    parser: lines
+    timeout: 600
+    required: false
+
+  - name: Nuclei Scan (critical/high)
+    command: "echo {{target}} | nuclei -silent -severity critical,high -jsonl"
+    tool: nuclei
+    data_type: other
+    parser: lines
+    timeout: 1200
+    save_raw: true
+    required: false
+
+  - name: Nuclei Scan (medium)
+    command: "echo {{target}} | nuclei -silent -severity medium -jsonl"
+    tool: nuclei
+    data_type: other
+    parser: lines
+    timeout: 1200
+    save_raw: true
+    required: false
+
+  - name: Nikto Web Scanner
+    command: "nikto -h {{target}} -Format txt -nointeractive"
+    tool: nikto
+    data_type: other
+    parser: lines
+    timeout: 900
+    save_raw: true
+    required: false
+
+  - name: TLS/SSL Analysis (testssl)
+    command: "testssl --quiet --color 0 {{target}}"
+    tool: testssl
+    data_type: cert
+    parser: lines
+    timeout: 600
+    save_raw: true
+    required: false

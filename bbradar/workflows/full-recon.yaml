@@ -1,0 +1,79 @@
+name: full-recon
+description: >
+  Full reconnaissance workflow — combines subdomain enumeration (multiple sources),
+  DNS enumeration, port scanning (fast + detailed), HTTP probing, technology
+  detection, and directory fuzzing. The most thorough recon workflow.
+
+steps:
+  - name: Subdomain Enumeration (subfinder)
+    command: "subfinder -d {{domain}} -silent -all"
+    tool: subfinder
+    data_type: subdomain
+    parser: lines
+    timeout: 600
+    required: false
+
+  - name: Subdomain Enumeration (amass passive)
+    command: "amass enum -passive -d {{domain}} -silent"
+    tool: amass
+    data_type: subdomain
+    parser: lines
+    timeout: 900
+    required: false
+
+  - name: DNS Record Enumeration (dig)
+    command: "dig {{domain}} ANY +noall +answer"
+    tool: dig
+    data_type: dns
+    parser: lines
+    timeout: 120
+    required: false
+
+  - name: Fast Port Scan (masscan top 1000)
+    command: "masscan {{target}} -p1-1000 --rate=1000 -oL -"
+    tool: masscan
+    data_type: port
+    parser: lines
+    timeout: 600
+    required: false
+
+  - name: Detailed Port Scan (nmap top 1000)
+    command: "nmap -sV -sC --top-ports 1000 -T4 {{target}} -oG -"
+    tool: nmap
+    data_type: port
+    parser: lines
+    timeout: 1200
+    save_raw: true
+    required: false
+
+  - name: HTTP Probing (httpx)
+    command: "subfinder -d {{domain}} -silent | httpx -silent -status-code -title -tech-detect -follow-redirects"
+    tool: httpx
+    data_type: url
+    parser: lines
+    timeout: 600
+    required: false
+
+  - name: Technology Detection (whatweb)
+    command: "whatweb {{target}} --color=never -q"
+    tool: whatweb
+    data_type: tech
+    parser: lines
+    timeout: 120
+    required: false
+
+  - name: Directory Brute-Force (gobuster)
+    command: "gobuster dir -u http://{{target}} -w /usr/share/wordlists/dirb/common.txt -q --no-progress"
+    tool: gobuster
+    data_type: endpoint
+    parser: lines
+    timeout: 600
+    required: false
+
+  - name: Certificate Transparency
+    command: "curl -s 'https://crt.sh/?q=%25.{{domain}}&output=json' | jq -r '.[].name_value' | sort -u"
+    tool: curl
+    data_type: subdomain
+    parser: lines
+    timeout: 120
+    required: false

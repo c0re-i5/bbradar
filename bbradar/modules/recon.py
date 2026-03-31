@@ -273,3 +273,265 @@ def ingest_from_file(target_id: int, file_path: str, data_type: str,
     values = [line.strip() for line in p.read_text().splitlines()
               if line.strip() and not line.startswith("#")]
     return bulk_add_recon(target_id, data_type, values, source_tool=source_tool, db_path=db_path)
+
+
+# ---------------------------------------------------------------------------
+# Additional tool runners
+# ---------------------------------------------------------------------------
+
+def ingest_masscan(target_id: int, target_value: str, extra_args: str = "",
+                   timeout: int = 600, db_path=None) -> int:
+    """Run masscan and ingest open ports."""
+    target_value = _validate_target(target_value)
+    cmd = ["masscan", target_value, "-p1-65535", "--rate=1000", "-oJ", "-"]
+    if extra_args:
+        cmd.extend(_validate_extra_args(extra_args))
+    rc, stdout, stderr = run_tool(cmd, timeout=timeout)
+    if rc != 0 and not stdout.strip():
+        raise RuntimeError(f"masscan failed: {stderr}")
+    from .parsers import get_parser
+    parser = get_parser("masscan")
+    findings = parser.parse(stdout) if parser else []
+    count = 0
+    for f in findings:
+        port = f.get("port")
+        host = f.get("host", target_value)
+        if port:
+            add_recon(target_id, "port", f"{port}/tcp",
+                      source_tool="masscan", db_path=db_path)
+            count += 1
+    add_recon(target_id, "other", f"masscan_scan_{target_value}",
+              source_tool="masscan", raw_output=stdout, db_path=db_path)
+    return count
+
+
+def ingest_nikto(target_id: int, target_value: str, extra_args: str = "",
+                 timeout: int = 900, db_path=None) -> int:
+    """Run nikto and ingest findings."""
+    target_value = _validate_target(target_value)
+    cmd = ["nikto", "-h", target_value, "-Format", "json", "-output", "-", "-nointeractive"]
+    if extra_args:
+        cmd.extend(_validate_extra_args(extra_args))
+    rc, stdout, stderr = run_tool(cmd, timeout=timeout)
+    if rc != 0 and not stdout.strip():
+        raise RuntimeError(f"nikto failed: {stderr}")
+    from .parsers import get_parser
+    parser = get_parser("nikto")
+    findings = parser.parse(stdout) if parser else []
+    count = 0
+    for f in findings:
+        add_recon(target_id, "other", f"nikto:{f.get('title', 'finding')}",
+                  source_tool="nikto", raw_output=f.get("evidence", ""), db_path=db_path)
+        count += 1
+    add_recon(target_id, "other", f"nikto_scan_{target_value}",
+              source_tool="nikto", raw_output=stdout, db_path=db_path)
+    return count
+
+
+def ingest_nuclei(target_id: int, target_value: str, extra_args: str = "",
+                  timeout: int = 1200, db_path=None) -> int:
+    """Run nuclei and ingest template matches."""
+    target_value = _validate_target(target_value)
+    cmd = ["nuclei", "-target", target_value, "-silent", "-jsonl"]
+    if extra_args:
+        cmd.extend(_validate_extra_args(extra_args))
+    rc, stdout, stderr = run_tool(cmd, timeout=timeout)
+    if rc != 0 and not stdout.strip():
+        raise RuntimeError(f"nuclei failed: {stderr}")
+    from .parsers import get_parser
+    parser = get_parser("nuclei")
+    findings = parser.parse(stdout) if parser else []
+    count = 0
+    for f in findings:
+        add_recon(target_id, "other", f"nuclei:{f.get('title', 'finding')}",
+                  source_tool="nuclei", raw_output=f.get("evidence", ""), db_path=db_path)
+        count += 1
+    add_recon(target_id, "other", f"nuclei_scan_{target_value}",
+              source_tool="nuclei", raw_output=stdout, db_path=db_path)
+    return count
+
+
+def ingest_gobuster(target_id: int, target_value: str, extra_args: str = "",
+                    wordlist: str = "/usr/share/wordlists/dirb/common.txt",
+                    timeout: int = 600, db_path=None) -> int:
+    """Run gobuster dir mode and ingest discovered endpoints."""
+    target_value = _validate_target(target_value)
+    url = target_value if target_value.startswith("http") else f"http://{target_value}"
+    cmd = ["gobuster", "dir", "-u", url, "-w", wordlist, "-q", "--no-progress"]
+    if extra_args:
+        cmd.extend(_validate_extra_args(extra_args))
+    rc, stdout, stderr = run_tool(cmd, timeout=timeout)
+    if rc != 0 and not stdout.strip():
+        raise RuntimeError(f"gobuster failed: {stderr}")
+    from .parsers import get_parser
+    parser = get_parser("gobuster")
+    findings = parser.parse(stdout) if parser else []
+    count = 0
+    for f in findings:
+        endpoint = f.get("endpoint", "")
+        if endpoint:
+            add_recon(target_id, "endpoint", endpoint,
+                      source_tool="gobuster", db_path=db_path)
+            count += 1
+    add_recon(target_id, "other", f"gobuster_scan_{target_value}",
+              source_tool="gobuster", raw_output=stdout, db_path=db_path)
+    return count
+
+
+def ingest_ffuf(target_id: int, target_value: str, extra_args: str = "",
+                wordlist: str = "/usr/share/wordlists/dirb/common.txt",
+                timeout: int = 600, db_path=None) -> int:
+    """Run ffuf and ingest discovered endpoints."""
+    target_value = _validate_target(target_value)
+    url = target_value if target_value.startswith("http") else f"http://{target_value}"
+    fuzz_url = f"{url.rstrip('/')}/FUZZ"
+    cmd = ["ffuf", "-u", fuzz_url, "-w", wordlist, "-s", "-o", "-", "-of", "json"]
+    if extra_args:
+        cmd.extend(_validate_extra_args(extra_args))
+    rc, stdout, stderr = run_tool(cmd, timeout=timeout)
+    if rc != 0 and not stdout.strip():
+        raise RuntimeError(f"ffuf failed: {stderr}")
+    from .parsers import get_parser
+    parser = get_parser("ffuf")
+    findings = parser.parse(stdout) if parser else []
+    count = 0
+    for f in findings:
+        endpoint = f.get("endpoint", "")
+        if endpoint:
+            add_recon(target_id, "endpoint", endpoint,
+                      source_tool="ffuf", db_path=db_path)
+            count += 1
+    add_recon(target_id, "other", f"ffuf_scan_{target_value}",
+              source_tool="ffuf", raw_output=stdout, db_path=db_path)
+    return count
+
+
+def ingest_whatweb(target_id: int, target_value: str, extra_args: str = "",
+                   timeout: int = 120, db_path=None) -> int:
+    """Run whatweb and ingest technology fingerprints."""
+    target_value = _validate_target(target_value)
+    url = target_value if target_value.startswith("http") else f"http://{target_value}"
+    cmd = ["whatweb", url, "--log-json=-", "-q"]
+    if extra_args:
+        cmd.extend(_validate_extra_args(extra_args))
+    rc, stdout, stderr = run_tool(cmd, timeout=timeout)
+    if rc != 0 and not stdout.strip():
+        raise RuntimeError(f"whatweb failed: {stderr}")
+    from .parsers import get_parser
+    parser = get_parser("whatweb")
+    findings = parser.parse(stdout) if parser else []
+    count = 0
+    for f in findings:
+        evidence = f.get("evidence", "")
+        if evidence:
+            add_recon(target_id, "tech", evidence,
+                      source_tool="whatweb", db_path=db_path)
+            count += 1
+    add_recon(target_id, "other", f"whatweb_scan_{target_value}",
+              source_tool="whatweb", raw_output=stdout, db_path=db_path)
+    return count
+
+
+def ingest_testssl(target_id: int, target_value: str, extra_args: str = "",
+                   timeout: int = 600, db_path=None) -> int:
+    """Run testssl.sh and ingest TLS/SSL findings."""
+    target_value = _validate_target(target_value)
+    cmd = ["testssl", "--jsonfile=-", "--quiet", target_value]
+    if extra_args:
+        cmd.extend(_validate_extra_args(extra_args))
+    rc, stdout, stderr = run_tool(cmd, timeout=timeout)
+    if rc != 0 and not stdout.strip():
+        raise RuntimeError(f"testssl failed: {stderr}")
+    from .parsers import get_parser
+    parser = get_parser("testssl")
+    findings = parser.parse(stdout) if parser else []
+    count = 0
+    for f in findings:
+        add_recon(target_id, "cert", f"tls:{f.get('title', 'finding')}",
+                  source_tool="testssl", db_path=db_path)
+        count += 1
+    add_recon(target_id, "other", f"testssl_scan_{target_value}",
+              source_tool="testssl", raw_output=stdout, db_path=db_path)
+    return count
+
+
+def ingest_wpscan(target_id: int, target_value: str, extra_args: str = "",
+                  timeout: int = 600, db_path=None) -> int:
+    """Run wpscan and ingest WordPress-specific findings."""
+    target_value = _validate_target(target_value)
+    url = target_value if target_value.startswith("http") else f"http://{target_value}"
+    cmd = ["wpscan", "--url", url, "--format", "json", "--no-banner"]
+    if extra_args:
+        cmd.extend(_validate_extra_args(extra_args))
+    rc, stdout, stderr = run_tool(cmd, timeout=timeout)
+    if rc != 0 and not stdout.strip():
+        raise RuntimeError(f"wpscan failed: {stderr}")
+    from .parsers import get_parser
+    parser = get_parser("wpscan")
+    findings = parser.parse(stdout) if parser else []
+    count = 0
+    for f in findings:
+        add_recon(target_id, "other", f"wpscan:{f.get('title', 'finding')}",
+                  source_tool="wpscan", raw_output=f.get("evidence", ""), db_path=db_path)
+        count += 1
+    add_recon(target_id, "other", f"wpscan_scan_{target_value}",
+              source_tool="wpscan", raw_output=stdout, db_path=db_path)
+    return count
+
+
+def ingest_amass(target_id: int, domain: str, extra_args: str = "",
+                 timeout: int = 900, db_path=None) -> int:
+    """Run amass passive enumeration and ingest subdomains."""
+    domain = _validate_target(domain)
+    cmd = ["amass", "enum", "-passive", "-d", domain, "-silent"]
+    if extra_args:
+        cmd.extend(_validate_extra_args(extra_args))
+    rc, stdout, stderr = run_tool(cmd, timeout=timeout)
+    if rc != 0 and not stdout.strip():
+        raise RuntimeError(f"amass failed: {stderr}")
+    subs = [line.strip() for line in stdout.splitlines() if line.strip()]
+    return bulk_add_recon(target_id, "subdomain", subs, source_tool="amass", db_path=db_path)
+
+
+def ingest_dig(target_id: int, domain: str, extra_args: str = "",
+               record_types: str = "A,AAAA,CNAME,MX,NS,TXT",
+               timeout: int = 120, db_path=None) -> int:
+    """Run dig for multiple record types and ingest DNS records."""
+    domain = _validate_target(domain)
+    count = 0
+    for rtype in record_types.split(","):
+        rtype = rtype.strip().upper()
+        if not rtype:
+            continue
+        cmd = ["dig", domain, rtype, "+noall", "+answer"]
+        if extra_args:
+            cmd.extend(_validate_extra_args(extra_args))
+        rc, stdout, stderr = run_tool(cmd, timeout=timeout)
+        if rc != 0:
+            continue
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line or line.startswith(";"):
+                continue
+            add_recon(target_id, "dns", f"{rtype}:{line}",
+                      source_tool="dig", db_path=db_path)
+            count += 1
+    return count
+
+
+# Maps tool name → (ingest function, description, default_timeout)
+TOOL_RUNNERS = {
+    "subfinder": (ingest_subfinder, "Subdomain enumeration", 300),
+    "nmap": (ingest_nmap, "Port scanning & service detection", 600),
+    "httpx": (ingest_httpx, "HTTP probing & tech detection", 300),
+    "masscan": (ingest_masscan, "Fast port scanning", 600),
+    "nikto": (ingest_nikto, "Web vulnerability scanning", 900),
+    "nuclei": (ingest_nuclei, "Template-based vulnerability scanning", 1200),
+    "gobuster": (ingest_gobuster, "Directory/file brute-forcing", 600),
+    "ffuf": (ingest_ffuf, "Web fuzzing", 600),
+    "whatweb": (ingest_whatweb, "Technology fingerprinting", 120),
+    "testssl": (ingest_testssl, "TLS/SSL analysis", 600),
+    "wpscan": (ingest_wpscan, "WordPress vulnerability scanning", 600),
+    "amass": (ingest_amass, "Subdomain enumeration (passive)", 900),
+    "dig": (ingest_dig, "DNS record enumeration", 120),
+}

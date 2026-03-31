@@ -38,7 +38,7 @@ evidence, and reports in one place.
 - **Local-first** — all data stays on your machine in `~/.bbradar/`
 - **Single-user** — designed for individual researchers, no server or accounts
 - **CLI-native** — works entirely from the terminal via the `bb` command
-- **Tool-agnostic** — ingest output from 15+ security tools automatically
+- **Tool-agnostic** — ingest output from 20+ security tools automatically
 - **Knowledge-backed** — built-in CWE, CAPEC, VRT, Nuclei, CVE, KEV, and EPSS databases
 
 ## Installation
@@ -168,6 +168,11 @@ Automatically parse output from security tools and create structured findings:
 | Qualys | XML |
 | Fortify | XML (FPR) |
 | Veracode | XML |
+| Masscan | JSON / List |
+| Gobuster | JSON / JSONL / Text |
+| WhatWeb | JSON / Text |
+| Amass | JSON / JSONL / Text |
+| Dig | Text |
 
 ```bash
 # Ingest a single scan
@@ -175,6 +180,54 @@ bb ingest file scan.xml 1 --tool nmap
 
 # Auto-detect the tool format
 bb ingest file scan_output.json 1
+```
+
+### Recon Tool Runners
+
+Run tools directly from BBRadar and auto-ingest the results:
+
+```bash
+bb recon tools                      # List all 13 supported tools
+bb recon run nmap 1                 # Run nmap against target 1
+bb recon run subfinder 1            # Enumerate subdomains
+bb recon run masscan 1 --args "-p1-1000"  # Custom arguments
+bb recon run nuclei 1 --args "-severity critical,high"
+```
+
+Supported tools: subfinder, nmap, httpx, masscan, nikto, nuclei, gobuster,
+ffuf, whatweb, testssl, wpscan, amass, dig.
+
+### Probe System
+
+Analyze discovered recon data and get actionable follow-up suggestions:
+
+```bash
+bb probe 1                          # Show intel + suggestions for target 1
+bb probe 1 --auto                   # Auto-run all suggested actions
+bb probe 1 --port 443               # Filter suggestions by port
+bb probe 1 --service http           # Filter by service
+bb probe 1 --dry-run                # Preview without executing
+```
+
+### Interactive Console
+
+Launch a Metasploit-style interactive environment with tab completion,
+command history, and dynamic project context:
+
+```bash
+bb console                          # Launch interactive console
+bbradar-console                     # Direct entry point (same thing)
+```
+
+Inside the console:
+```
+bb > use 1                          # Set active project
+bb (Acme Corp) > recon run nmap 1   # Run tools
+bb (Acme Corp) > probe 1 --auto     # Probe targets
+bb (Acme Corp) > targets            # Alias for 'target list'
+bb (Acme Corp) > scan nmap 1        # Alias for 'recon run'
+bb (Acme Corp) > help               # Full command reference
+bb (Acme Corp) > shortcuts          # Show all aliases
 ```
 
 ### Knowledge Base
@@ -205,7 +258,10 @@ Pre-built assessment workflows that guide you through multi-step processes:
 
 - **recon-basic** — Subdomain enumeration → live host detection → port scanning
 - **recon-deep** — Full reconnaissance including tech detection, certificate transparency, Wayback Machine, JS/parameter discovery
+- **full-recon** — Complete recon pipeline: subfinder → amass → dig → masscan → nmap → httpx → whatweb → gobuster
 - **vuln-scan** — Automated scanning with Nuclei, Nikto, security headers, SSL/TLS analysis
+- **web-audit** — Web application audit: whatweb → gobuster → ffuf → nuclei → nikto → testssl
+- **wordpress-audit** — WordPress-specific: whatweb → wpscan → nuclei (WP tags) → gobuster → nikto
 
 ```bash
 bb workflow list
@@ -387,11 +443,13 @@ bb db status                # Show DB version and migration state
 | `bb note` | Manage assessment notes |
 | `bb evidence` | Evidence files (stats, orphans, cleanup) |
 | `bb report` | Generate reports (markdown, html, pdf, json) |
-| `bb ingest` | Ingest tool output (15 supported tools) |
+| `bb ingest` | Ingest tool output (20 supported tools) |
 | `bb workflow` | Run assessment workflows (list, run, preflight) |
 | `bb wizard` | Interactive wizards (project, target, vuln, quick) |
 | `bb templates` | Browse / search vulnerability templates |
 | `bb kb` | Knowledge base (sync, search, cve, kev, enrich, stats) |
+| `bb probe` | Analyze recon data and suggest follow-up actions |
+| `bb console` | Launch interactive console (msfconsole-style) |
 | `bb h1` | HackerOne API (auth, programs, import, reports, earnings) |
 | `bb dashboard` | Combined BBRadar + HackerOne dashboard |
 | `bb config` | View / edit configuration |
@@ -419,6 +477,7 @@ Run `bb <command> --help` for detailed usage of any command.
 
 bbradar/
 ├── cli.py              # CLI entry point and command routing
+├── console.py          # Interactive console (msfconsole-style REPL)
 ├── core/
 │   ├── database.py     # SQLite connection management and migrations
 │   ├── config.py       # Configuration + active project context
@@ -430,7 +489,8 @@ bbradar/
 │   ├── vulns.py        # Vulnerability tracking + state machine
 │   ├── notes.py        # Notes
 │   ├── scope.py        # Scope rule engine
-│   ├── recon.py        # Recon data + tool integrations (subfinder, nmap, httpx)
+│   ├── recon.py        # Recon data + 13 tool runners
+│   ├── probe.py        # Probe system — actionable recon follow-ups
 │   ├── hackerone.py    # HackerOne API integration
 │   ├── evidence.py     # Evidence file management
 │   ├── reports.py      # Report generation (MD, HTML, PDF, JSON)
@@ -438,9 +498,9 @@ bbradar/
 │   ├── workflows.py    # Workflow engine
 │   ├── wizards.py      # Interactive wizards
 │   ├── kb.py           # Knowledge base sync + search (CWE, CAPEC, VRT, Nuclei, CVE, KEV, EPSS)
-│   └── parsers/        # 15 tool-specific output parsers
+│   └── parsers/        # 20 tool-specific output parsers
 ├── templates/           # Vulnerability templates (reserved)
-└── workflows/           # Workflow definitions (YAML)
+└── workflows/           # Workflow definitions (6 YAML files)
 ```
 
 ## Security

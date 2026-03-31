@@ -2,6 +2,34 @@
 
 All notable changes to BBRadar will be documented in this file.
 
+## [0.5.4] — 2026-03-31
+
+### Added
+
+- **Interactive console** — msfconsole-style REPL with tab completion,
+  persistent readline history, dynamic prompt showing active project,
+  command aliases/shortcuts, and colorized banner with live stats.
+  Launch via `bb console` or the `bbradar-console` entry point.
+
+- **Probe system** — `bb probe <target_id>` analyzes discovered recon data
+  (open ports, services, technologies) and suggests or auto-runs follow-up
+  tools. Supports `--auto`, `--dry-run`, `--port`, and `--service` filters.
+
+- **5 new parsers** — Masscan, Gobuster, WhatWeb, Amass, and Dig output
+  can now be ingested via `bb ingest`. Includes content-based auto-detection.
+
+- **10 new tool runners** — `bb recon run` now supports 13 tools total:
+  subfinder, nmap, httpx, masscan, nikto, nuclei, gobuster, ffuf, whatweb,
+  testssl, wpscan, amass, and dig. Added `bb recon tools` to list them.
+
+- **3 new workflow definitions** — `web-audit.yaml` (whatweb → gobuster →
+  ffuf → nuclei → nikto → testssl), `full-recon.yaml` (subfinder → amass →
+  dig → masscan → nmap → httpx → whatweb → gobuster), and
+  `wordpress-audit.yaml` (whatweb → wpscan → nuclei → gobuster → nikto).
+
+- **`bbradar-console` entry point** — typing `bbradar-console` launches the
+  interactive console directly.
+
 ## [0.5.3] — 2026-03-30
 
 ### Fixed

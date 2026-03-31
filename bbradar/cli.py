@@ -26,6 +26,7 @@ Commands:
     db          Database management — backup, restore, migrate
     init        Initialize BBRadar (first-time setup)
     status      Show current workspace status
+    console     Launch interactive console (msfconsole-style)
 """
 
 import argparse
@@ -44,6 +45,7 @@ from .core.audit import get_audit_log
 from .core.utils import format_table, severity_color, confirm, set_no_color
 from .modules import projects, targets, recon, vulns, notes, reports, workflows
 from .modules import vuln_templates, knowledgebase, ingest, scope, hackerone, notifier
+from .modules import probe
 from .modules.wizards import wizard_project, wizard_target, wizard_vuln, quick_vuln
 
 
@@ -69,6 +71,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- status ---
     sub.add_parser("status", help="Show workspace status")
+
+    # --- console ---
+    sub.add_parser("console", help="Launch interactive console (msfconsole-style)")
 
     # --- use (active project context) ---
     p_use = sub.add_parser("use", help="Set the active project (avoids typing project_id every time)")
@@ -183,9 +188,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", "-o", help="Output file path")
 
     p = sp.add_parser("run", help="Run a tool and ingest results")
-    p.add_argument("tool_name", help="Tool to run (subfinder/nmap/httpx)")
+    p.add_argument("tool_name", help="Tool to run (subfinder/nmap/httpx/masscan/nikto/nuclei/gobuster/ffuf/whatweb/testssl/wpscan/amass/dig)")
     p.add_argument("target_id", type=int, help="Target ID")
     p.add_argument("--args", "-a", default="", help="Extra tool arguments")
+
+    sp.add_parser("tools", help="List all runnable recon tools")
 
     # --- vuln ---
     p_vuln = sub.add_parser("vuln", help="Track vulnerabilities")
@@ -497,6 +504,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sp.add_parser("preflight", help="Check if required tools are installed")
     p.add_argument("name", help="Workflow name or path")
+
+    # --- probe ---
+    p_probe = sub.add_parser("probe", help="Analyze recon data and run follow-up tools")
+    p_probe.add_argument("target_id", type=int, help="Target ID to probe")
+    p_probe.add_argument("--port", type=int, help="Focus on a specific port")
+    p_probe.add_argument("--service", help="Focus on a specific service type (http, ftp, ssh, ...)")
+    p_probe.add_argument("--auto", action="store_true", help="Auto-run all suggestions without prompting")
+    p_probe.add_argument("--dry-run", action="store_true", help="Show suggestions without executing")
 
     # --- evidence ---
     p_ev = sub.add_parser("evidence", help="Evidence file management")
@@ -1017,27 +1032,32 @@ def cmd_recon(args):
 
     elif args.subcmd == "run":
         tool = args.tool_name.lower()
+        if tool not in recon.TOOL_RUNNERS:
+            print(f"Tool '{tool}' not supported. Run 'bb recon tools' to see available tools.")
+            return
         t = targets.get_target(args.target_id)
         if not t:
             print(f"Target #{args.target_id} not found.")
             return
         print(f"Running {tool} against {t['value']}...")
         try:
-            if tool == "subfinder":
-                count = recon.ingest_subfinder(args.target_id, t["value"], extra_args=args.args)
-            elif tool == "nmap":
-                count = recon.ingest_nmap(args.target_id, t["value"], extra_args=args.args or "-sV -sC")
-            elif tool == "httpx":
-                count = recon.ingest_httpx(args.target_id, targets=[t["value"]], extra_args=args.args)
+            runner_fn, _desc, _timeout = recon.TOOL_RUNNERS[tool]
+            if tool == "httpx":
+                count = runner_fn(args.target_id, targets=[t["value"]], extra_args=args.args)
             else:
-                print(f"Tool '{tool}' not supported for auto-ingest. Use 'bb recon import' instead.")
-                return
+                count = runner_fn(args.target_id, t["value"], extra_args=args.args)
             print(f"✓ Ingested {count} results from {tool}")
         except RuntimeError as e:
             print(f"Error: {e}")
 
+    elif args.subcmd == "tools":
+        print(f"\n═══ Runnable Recon Tools ({len(recon.TOOL_RUNNERS)}) ═══\n")
+        for name, (fn, desc, timeout) in sorted(recon.TOOL_RUNNERS.items()):
+            print(f"  {name:15s} — {desc}")
+        print(f"\n  Usage: bb recon run <tool> <target_id> [--args '<extra flags>']")
+
     else:
-        print("Usage: bb recon {add|list|import|summary|export|run}")
+        print("Usage: bb recon {add|list|import|summary|export|run|tools}")
 
 
 def cmd_vuln(args):
@@ -2140,6 +2160,142 @@ def cmd_workflow(args):
         print("Usage: bb workflow {list|run|show|history|preflight}")
 
 
+def cmd_probe(args):
+    """Analyze recon data and suggest/run follow-up tools."""
+    t = targets.get_target(args.target_id)
+    if not t:
+        print(f"Target #{args.target_id} not found.")
+        return
+
+    target_value = t["value"]
+    print(f"\n═══ Probe: {target_value} (Target #{args.target_id}) ═══\n")
+
+    # Gather intelligence
+    intel = probe.get_target_intel(args.target_id)
+
+    # Show discovered data summary
+    if intel["ports"]:
+        print(f"  Open Ports ({len(intel['ports'])}):")
+        for p in sorted(intel["ports"], key=lambda x: x["port"]):
+            svc = f" ({p['service']})" if p["service"] else ""
+            print(f"    {p['port']}/{p['proto']}{svc}")
+    if intel["services"]:
+        svc_names = sorted(set(s["name"] for s in intel["services"]))
+        print(f"\n  Services: {', '.join(svc_names)}")
+    if intel["tech"]:
+        print(f"\n  Technologies ({len(intel['tech'])}):")
+        for tech in intel["tech"][:20]:
+            print(f"    - {tech}")
+    if intel["subdomains"]:
+        print(f"\n  Subdomains: {len(intel['subdomains'])} discovered")
+    if intel["urls"]:
+        print(f"  Live URLs: {len(intel['urls'])}")
+    if intel["endpoints"]:
+        print(f"  Endpoints: {len(intel['endpoints'])}")
+    if intel["dns"]:
+        print(f"  DNS Records: {len(intel['dns'])}")
+
+    if not intel["ports"] and not intel["services"] and not intel["tech"]:
+        print("\n  No recon data found. Run 'bb recon run nmap <target_id>' first.")
+        return
+
+    # Generate suggestions
+    suggestions = probe.suggest_actions(
+        intel,
+        port_filter=getattr(args, "port", None),
+        service_filter=getattr(args, "service", None),
+    )
+
+    if not suggestions:
+        print("\n  No follow-up actions suggested for current filters.")
+        return
+
+    print(f"\n  Suggested Actions ({len(suggestions)}):\n")
+    for s in suggestions:
+        print(f"    [{s['index']:2d}] {s['tool']:12s} — {s['description']}")
+        print(f"         Reason: {s['reason']}")
+
+    if args.dry_run:
+        print("\n  (dry run — no tools executed)")
+        return
+
+    if args.auto:
+        # Auto-run all
+        print(f"\n  Auto-running {len(suggestions)} actions...\n")
+        results = probe.auto_probe(
+            args.target_id, target_value, intel,
+            port_filter=getattr(args, "port", None),
+            service_filter=getattr(args, "service", None),
+        )
+        _print_probe_results(results)
+        return
+
+    # Interactive: let user pick
+    print(f"\n  Enter action numbers to run (comma-separated), 'all', or 'q' to quit:")
+    try:
+        choice = input("  > ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Cancelled.")
+        return
+
+    if choice.lower() in ("q", "quit", ""):
+        return
+
+    if choice.lower() == "all":
+        selected = suggestions
+    else:
+        selected_indices = set()
+        for part in choice.split(","):
+            part = part.strip()
+            if "-" in part:
+                # Range: 1-5
+                try:
+                    start, end = part.split("-", 1)
+                    for i in range(int(start), int(end) + 1):
+                        selected_indices.add(i)
+                except ValueError:
+                    print(f"  Invalid range: {part}")
+                    continue
+            else:
+                try:
+                    selected_indices.add(int(part))
+                except ValueError:
+                    print(f"  Invalid number: {part}")
+                    continue
+        selected = [s for s in suggestions if s["index"] in selected_indices]
+
+    if not selected:
+        print("  No valid actions selected.")
+        return
+
+    print(f"\n  Running {len(selected)} action(s)...\n")
+    results = []
+    for action in selected:
+        print(f"  [{action['index']}] Running {action['tool']} — {action['description']}...")
+        result = probe.run_probe_action(args.target_id, target_value, action)
+        results.append(result)
+        if result["error"]:
+            print(f"      ✗ Error: {result['error']}")
+        else:
+            print(f"      ✓ Ingested {result['count']} results")
+
+    _print_probe_results(results)
+
+
+def _print_probe_results(results: list[dict]):
+    """Print summary of probe action results."""
+    total = sum(r["count"] for r in results)
+    errors = sum(1 for r in results if r.get("error"))
+    ok = len(results) - errors
+
+    print(f"\n  ═══ Probe Summary ═══")
+    print(f"    Actions run:      {len(results)}")
+    print(f"    Successful:       {ok}")
+    if errors:
+        print(f"    Failed:           {errors}")
+    print(f"    Total ingested:   {total}")
+
+
 def cmd_audit(args):
     from .core.audit import get_audit_stats, purge_audit_log, export_audit_log
 
@@ -2885,14 +3041,22 @@ def cmd_dashboard(args):
 # Main Entry Point
 # ═══════════════════════════════════════════════════════════════════
 
+def cmd_console(_args):
+    """Launch the interactive console."""
+    from .console import run_console
+    run_console()
+
+
 COMMAND_MAP = {
     "init": cmd_init,
     "status": cmd_status,
+    "console": cmd_console,
     "use": cmd_use,
     "completion": cmd_completion,
     "project": cmd_project,
     "target": cmd_target,
     "recon": cmd_recon,
+    "probe": cmd_probe,
     "vuln": cmd_vuln,
     "note": cmd_note,
     "report": cmd_report,
@@ -2935,6 +3099,8 @@ def main():
             print("    bb h1 auth                   Connect your account")
             print("    bb h1 import <program>       Import a program")
             print("    bb dashboard                 View dashboard")
+            print("\n  Interactive:")
+            print("    bb console                   Launch interactive console")
             print("\n  Run 'bb --help' for all commands.\n")
         sys.exit(0)
 
