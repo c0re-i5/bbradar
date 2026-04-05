@@ -64,6 +64,9 @@ bb init
 # PDF report generation
 pip install -e ".[pdf]"
 
+# Live scanner integration (Burp Suite / OWASP ZAP)
+pip install -e ".[scanner]"
+
 # Development tools (pytest, black, ruff)
 pip install -e ".[dev]"
 ```
@@ -256,6 +259,42 @@ bb diff current                     # Diff current state vs last snapshot
 bb diff current --notify            # Diff and send Discord/desktop alerts
 ```
 
+### Live Scanner Integration
+
+Connect to running Burp Suite or OWASP ZAP instances for end-to-end
+scan workflows directly from the CLI:
+
+```bash
+bb scanner status                   # Auto-detect running scanners
+bb scanner status --scanner zap     # Check ZAP specifically
+bb scanner status --scanner burp    # Check Burp specifically
+bb scanner scan 1                   # Launch active scan against target 1
+bb scanner scan 1 --scanner zap     # Force ZAP for the scan
+bb scanner spider 1                 # Spider/crawl target 1 via ZAP
+bb scanner import 1                 # Import findings as draft vulns
+bb scanner scope-sync 1             # Push scope rules into ZAP context
+bb scanner monitor 1                # Continuous monitoring (poll for new alerts)
+bb scanner monitor 1 --interval 30  # Custom poll interval (seconds)
+```
+
+- **Auto-detection** — finds running ZAP (`:8080`) or Burp (`:1337`) instances
+- **Finding import** — maps scanner alerts to BBRadar vulns with severity,
+  CWE, OWASP category, and confidence. Automatic deduplication by title+URL
+- **Scope sync** — converts BBRadar scope rules to ZAP context include/exclude
+  regex patterns so the scanner stays within authorized boundaries
+- **Workflow steps** — YAML workflows can include `scanner: zap` directives
+  with `action: spider`, `action: scan`, or `action: import`
+- **Probe integration** — `bb probe` suggests Burp/ZAP scans when HTTP ports
+  are detected on targets
+
+Configure scanner URLs and API keys:
+```bash
+bb config set scanner.zap.url http://localhost:8080
+bb config set scanner.zap.api_key <your-zap-api-key>
+bb config set scanner.burp.url http://localhost:1337
+bb config set scanner.burp.api_key <your-burp-api-key>
+```
+
 ### Probe System
 
 Analyze discovered recon data and get actionable follow-up suggestions:
@@ -324,6 +363,8 @@ Pre-built assessment workflows that guide you through multi-step processes:
 
 Workflow steps marked `parallel: true` run concurrently via thread pool.
 Concurrency is controlled by `max_parallel` in the workflow YAML (default: 4).
+Workflows can also include scanner steps (`scanner: zap`, `action: spider|scan|import`)
+to chain live Burp/ZAP operations into automated pipelines.
 
 ```bash
 bb workflow list

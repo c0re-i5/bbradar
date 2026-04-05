@@ -85,6 +85,29 @@ Workflow YAML files live in `bbradar/data/workflows/`. Follow the existing
 format — each step should define `name`, `tool`, `command`, and optionally
 `description` and `expected_output`.
 
+Workflows can also include scanner steps that interact with running Burp/ZAP
+instances. Scanner steps use `scanner: zap` (or `burp`) and
+`action: spider|scan|import` instead of `tool` and `command`.
+
+## Scanner Integration
+
+BBRadar integrates with running Burp Suite and OWASP ZAP instances via their
+REST APIs. The scanner module lives in `bbradar/modules/scanner.py`.
+
+- **ZAP** — full support: status, spider, active scan, alert import, scope
+  sync (context include/exclude), continuous monitoring
+- **Burp** — scan launch and status check via the Burp REST API
+  (`/v0.1/scan`). Issue import parses the scan result.
+
+To extend scanner support:
+
+1. Add a new client class in `scanner.py` following the `ZAPClient` /
+   `BurpClient` pattern
+2. Update `check_status()` and `detect_scanner()` to recognize the new scanner
+3. Add classification maps (`_TYPE_MAP`, risk/confidence maps)
+4. Wire CLI subcommands in `cli.py` → `cmd_scanner()`
+5. Add tests in `tests/test_scanner.py`
+
 ## Reporting Bugs
 
 Open an issue with:
