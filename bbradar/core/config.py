@@ -46,6 +46,17 @@ DEFAULTS = {
         "username": "",
         "api_token": "",
     },
+    # Live scanner integration
+    "scanner": {
+        "zap": {
+            "url": "http://localhost:8080",
+            "api_key": "",
+        },
+        "burp": {
+            "url": "http://localhost:1337",
+            "api_key": "",
+        },
+    },
 }
 
 

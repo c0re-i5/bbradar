@@ -116,6 +116,11 @@ def preflight_check(name: str) -> dict:
 def _execute_step(step: dict, target_value: str, target_id: int,
                    dry_run: bool, db_path=None) -> dict:
     """Execute a single workflow step. Returns a result dict."""
+    # Delegate to scanner step handler if scanner key is present
+    if step.get("scanner"):
+        return _execute_scanner_step(step, target_value, target_id,
+                                      dry_run, db_path)
+
     step_name = step.get("name", "unnamed")
     command_template = step.get("command", "")
     data_type = step.get("data_type", "other")
@@ -174,6 +179,72 @@ def _execute_step(step: dict, target_value: str, target_id: int,
                   source_tool=source_tool, raw_output=stdout, db_path=db_path)
 
     return {"ok": True, "lines": lines, "ingested": ingested}
+
+
+def _execute_scanner_step(step: dict, target_value: str, target_id: int,
+                           dry_run: bool, db_path=None) -> dict:
+    """Execute a workflow step that uses a live scanner (ZAP/Burp)."""
+    step_name = step.get("name", "scanner step")
+    scanner_type = step.get("scanner", "zap")
+    action = step.get("action", "scan")
+    wait = step.get("wait", True)
+    lines = [f"  Scanner: {scanner_type.upper()}, Action: {action}"]
+
+    if dry_run:
+        lines.append("  (dry run — skipped)")
+        return {"ok": True, "lines": lines, "ingested": 0, "skipped": True}
+
+    try:
+        from . import scanner as scanner_mod
+
+        if action == "spider":
+            lines.append(f"  Spidering {target_value} via {scanner_type.upper()}...")
+            result = scanner_mod.spider(
+                target_id=target_id,
+                scanner_type=scanner_type,
+                db_path=db_path,
+            )
+            lines.append(f"  URLs found: {result['urls_found']}, Recon added: {result['recon_added']}")
+            return {"ok": True, "lines": lines, "ingested": result["recon_added"]}
+
+        elif action in ("scan", "active-scan"):
+            # Need project_id — get from target
+            target_obj = get_target(target_id, db_path)
+            project_id = target_obj["project_id"] if target_obj else None
+            lines.append(f"  Active scanning {target_value} via {scanner_type.upper()}...")
+            result = scanner_mod.scan(
+                target_id=target_id,
+                project_id=project_id,
+                scanner_type=scanner_type,
+                auto_import=True,
+                db_path=db_path,
+            )
+            imported = len(result.get("imported_ids", []))
+            lines.append(f"  Findings: {result['findings_count']}, Imported: {imported}")
+            return {"ok": True, "lines": lines, "ingested": imported}
+
+        elif action == "import":
+            target_obj = get_target(target_id, db_path)
+            project_id = target_obj["project_id"] if target_obj else None
+            lines.append(f"  Importing findings from {scanner_type.upper()}...")
+            result = scanner_mod.import_findings(
+                project_id=project_id,
+                scanner_type=scanner_type,
+                target_id=target_id,
+                db_path=db_path,
+            )
+            lines.append(f"  Total: {result['total']}, Imported: {result['imported']}")
+            return {"ok": True, "lines": lines, "ingested": result["imported"]}
+
+        else:
+            lines.append(f"  Unknown scanner action: {action}")
+            return {"ok": False, "lines": lines, "ingested": 0,
+                    "required": step.get("required", False)}
+
+    except Exception as e:
+        lines.append(f"  Scanner error: {e}")
+        return {"ok": False, "lines": lines, "ingested": 0,
+                "required": step.get("required", False)}
 
 
 def run_workflow(name: str, target_id: int, project_id: int = None,

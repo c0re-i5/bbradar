@@ -43,7 +43,10 @@ def create_vuln(project_id: int, title: str, severity: str = "medium",
                 reproduction: str = None, evidence: list[str] = None,
                 request: str = None, response: str = None,
                 remediation: str = None, cvss_score: float = None,
-                cvss_vector: str = None, db_path=None) -> int:
+                cvss_vector: str = None, source_tool: str = None,
+                confidence: str = None, cwe_id: str = None,
+                cve_id: str = None, owasp_category: str = None,
+                db_path=None) -> int:
     """Create a new vulnerability finding. Returns the vuln ID."""
     severity = severity.lower()
     if severity not in VALID_SEVERITIES:
@@ -63,11 +66,13 @@ def create_vuln(project_id: int, title: str, severity: str = "medium",
         cursor = conn.execute(
             """INSERT INTO vulns (project_id, target_id, title, vuln_type, severity,
                cvss_score, cvss_vector, description, impact, reproduction,
-               evidence, request, response, remediation)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               evidence, request, response, remediation,
+               source_tool, confidence, cwe_id, cve_id, owasp_category)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (project_id, target_id, title, vuln_type, severity,
              cvss_score, cvss_vector, description, impact, reproduction,
-             evidence_json, request, response, remediation),
+             evidence_json, request, response, remediation,
+             source_tool, confidence, cwe_id, cve_id, owasp_category),
         )
         vid = cursor.lastrowid
     log_action("created", "vuln", vid,

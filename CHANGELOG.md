@@ -2,6 +2,43 @@
 
 All notable changes to BBRadar will be documented in this file.
 
+## [0.7.0] — 2026-04-05
+
+### Added
+
+- **Live scanner integration** — connect to running Burp Suite and OWASP ZAP
+  instances for end-to-end workflows directly from the CLI.
+- **`bb scanner status`** — detect and check connectivity of local Burp/ZAP
+  instances (auto-detect or specify `--scanner zap|burp`).
+- **`bb scanner scan`** — launch active scans against project targets via
+  Burp or ZAP APIs.
+- **`bb scanner spider`** — trigger ZAP spider crawls against project targets.
+- **`bb scanner import`** — pull alerts/issues from running scanners and
+  create draft vulnerabilities with severity, CWE, OWASP, and confidence
+  mapping. Automatic deduplication by title+URL.
+- **`bb scanner scope-sync`** — push BBRadar scope rules into ZAP contexts
+  as include/exclude regex patterns.
+- **`bb scanner monitor`** — continuous monitoring loop that polls ZAP for
+  new alerts and auto-imports them at configurable intervals.
+- **Workflow scanner steps** — YAML workflows can now include scanner
+  directives (`scanner: zap`, `action: spider|scan|import`) for fully
+  automated recon-to-scan pipelines.
+- **Probe scanner suggestions** — `bb probe` now suggests Burp/ZAP scans
+  when HTTP ports are detected on targets.
+- **47 new tests** covering scanner clients, status checks, alert import,
+  classification maps, scope sync, spider, monitor, workflow steps, probe
+  suggestions, and confidence mapping (492 total).
+
+### Infrastructure
+
+- Database migration #7: 5 new columns on `vulns` table — `source_tool`,
+  `confidence`, `cwe_id`, `cve_id`, `owasp_category`.
+- Scanner config defaults in `bbradar.toml` under `[scanner.zap]` and
+  `[scanner.burp]` (URL + API key).
+- `requests` added as optional `[scanner]` dependency.
+- New module: `bbradar/modules/scanner.py` (~580 lines).
+- 6 new CLI subcommands under `bb scanner` (29 total top-level commands).
+
 ## [0.6.0] — 2026-04-05
 
 ### Added

@@ -515,6 +515,7 @@ bb db status                # Show DB version and migration state
 | `bb js` | JavaScript analysis (secrets, endpoints, source maps) |
 | `bb params` | Parameter classification (IDOR, SSRF, SQLi, XSS, etc.) |
 | `bb diff` | Attack surface diffing (snapshot, compare, current) |
+| `bb scanner` | Live scanner integration (status, scan, spider, import, scope-sync, monitor) |
 | `bb console` | Launch interactive console (msfconsole-style) |
 | `bb h1` | HackerOne API (auth, programs, import, reports, earnings) |
 | `bb dashboard` | Combined BBRadar + HackerOne dashboard |
@@ -568,6 +569,7 @@ bbradar/
 │   ├── jsanalyzer.py   # JavaScript file analysis (secrets, endpoints, source maps)
 │   ├── param_classifier.py  # Parameter vulnerability classification
 │   ├── differ.py       # Attack surface diffing (snapshot, compare, notify)
+│   ├── scanner.py      # Live Burp Suite / OWASP ZAP integration
 │   └── parsers/        # 20 tool-specific output parsers
 ├── templates/           # Vulnerability templates (reserved)
 └── workflows/           # Workflow definitions (6 YAML files)

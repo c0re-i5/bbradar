@@ -375,6 +375,10 @@ def _create_draft_vuln(finding: dict, project_id: int, db_path=None) -> int:
         response=finding.get("response", "") or None,
         evidence=evidence_list,
         cvss_score=finding.get("cvss_score"),
+        source_tool=finding.get("tool"),
+        confidence=finding.get("confidence"),
+        cwe_id=finding.get("cwe_id"),
+        cve_id=finding.get("cve_id"),
         db_path=db_path,
     )
     return vid

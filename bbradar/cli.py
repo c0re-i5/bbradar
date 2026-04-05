@@ -24,6 +24,7 @@ Commands:
     analyze     Web page analysis — tech, headers, forms, endpoints
     js          JavaScript analysis — secrets, endpoints, source maps
     params      Parameter classification — IDOR, SSRF, SQLi, XSS candidates
+    scanner     Live scanner integration — connect to running Burp / ZAP
     audit       View / manage audit log
     evidence    Evidence file management
     config      View/edit configuration
@@ -51,6 +52,7 @@ from .modules import projects, targets, recon, vulns, notes, reports, workflows
 from .modules import vuln_templates, knowledgebase, ingest, scope, hackerone, notifier
 from .modules import probe
 from .modules import differ, analyzer, jsanalyzer, param_classifier
+from .modules import scanner
 from .modules.wizards import wizard_project, wizard_target, wizard_vuln, quick_vuln
 
 
@@ -709,6 +711,36 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sp_params.add_parser("suggest", help="Generate test suggestions from classified parameters")
     p.add_argument("target_id", type=int, help="Target ID")
+
+    # --- scanner (live Burp / ZAP integration) ---
+    p_scanner = sub.add_parser("scanner", help="Live scanner integration — connect to running Burp Suite or OWASP ZAP")
+    sp_scanner = p_scanner.add_subparsers(dest="subcmd")
+
+    sp_scanner.add_parser("status", help="Check if Burp / ZAP is reachable")
+
+    p = sp_scanner.add_parser("scan", help="Launch active scan against a target")
+    p.add_argument("target_id", type=int, help="Target ID")
+    p.add_argument("--project", "-p", type=int, help="Project ID (default: active project)")
+    p.add_argument("--scanner", choices=["zap", "burp"], help="Force scanner type")
+    p.add_argument("--no-import", action="store_true", help="Don't auto-import findings")
+
+    p = sp_scanner.add_parser("spider", help="Spider a target via ZAP")
+    p.add_argument("target_id", type=int, help="Target ID")
+    p.add_argument("--scanner", choices=["zap"], default="zap", help="Scanner (ZAP only)")
+
+    p = sp_scanner.add_parser("import", help="Import all findings from connected scanner")
+    p.add_argument("--project", "-p", type=int, help="Project ID (default: active project)")
+    p.add_argument("--scanner", choices=["zap", "burp"], help="Force scanner type")
+    p.add_argument("--target", "-t", type=int, help="Target ID to associate")
+
+    p = sp_scanner.add_parser("scope-sync", help="Push scope rules to connected scanner")
+    p.add_argument("--project", "-p", type=int, help="Project ID (default: active project)")
+    p.add_argument("--scanner", choices=["zap"], default="zap", help="Scanner (ZAP only)")
+
+    p = sp_scanner.add_parser("monitor", help="Continuously poll scanner for new findings")
+    p.add_argument("--project", "-p", type=int, help="Project ID (default: active project)")
+    p.add_argument("--interval", type=int, default=30, help="Poll interval in seconds")
+    p.add_argument("--target", "-t", type=int, help="Target ID to associate")
 
     return parser
 
@@ -3325,6 +3357,81 @@ def cmd_params(args):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Scanner (live Burp / ZAP integration)
+# ═══════════════════════════════════════════════════════════════════
+
+def cmd_scanner(args):
+    subcmd = getattr(args, "subcmd", None)
+    if not subcmd:
+        print("Usage: bb scanner {status|scan|spider|import|scope-sync|monitor}")
+        sys.exit(1)
+
+    if subcmd == "status":
+        results = scanner.check_status()
+        for r in results:
+            icon = "✓" if r["status"] == "online" else "✗"
+            version = f" ({r['version']})" if r["version"] else ""
+            error = f" — {r['error']}" if r["error"] else ""
+            print(f"  {icon} {r['scanner'].upper():5s} {r['url']:30s} {r['status']}{version}{error}")
+
+    elif subcmd == "scan":
+        pid = _resolve_project(args)
+        scanner_type = getattr(args, "scanner", None)
+        auto_import = not getattr(args, "no_import", False)
+        result = scanner.scan(
+            target_id=args.target_id,
+            project_id=pid,
+            scanner_type=scanner_type,
+            auto_import=auto_import,
+        )
+        print(f"\n✓ {result['scanner'].upper()} scan completed — {result['target']}")
+        print(f"  Findings: {result['findings_count']}")
+        if result["imported_ids"]:
+            print(f"  Imported: {len(result['imported_ids'])} vulns (IDs: {', '.join(str(i) for i in result['imported_ids'][:10])})")
+        elif auto_import:
+            print("  No new findings to import (all duplicates or zero results).")
+
+    elif subcmd == "spider":
+        result = scanner.spider(target_id=args.target_id)
+        print(f"\n✓ Spider completed — {result['target']}")
+        print(f"  URLs found:  {result['urls_found']}")
+        print(f"  Recon added: {result['recon_added']}")
+
+    elif subcmd == "import":
+        pid = _resolve_project(args)
+        scanner_type = getattr(args, "scanner", None)
+        target_id = getattr(args, "target", None)
+        result = scanner.import_findings(
+            project_id=pid,
+            scanner_type=scanner_type,
+            target_id=target_id,
+        )
+        print(f"\n✓ Imported from {result['scanner'].upper()}")
+        print(f"  Total alerts:   {result['total']}")
+        print(f"  New imported:   {result['imported']}")
+        print(f"  Duplicates:     {result['duplicates']}")
+
+    elif subcmd == "scope-sync":
+        pid = _resolve_project(args)
+        scanner_type = getattr(args, "scanner", None)
+        result = scanner.scope_sync(pid, scanner_type=scanner_type)
+        print(f"\n✓ Scope synced to {result['scanner'].upper()}")
+        print(f"  Include rules pushed: {result['includes_pushed']}")
+        print(f"  Exclude rules pushed: {result['excludes_pushed']}")
+
+    elif subcmd == "monitor":
+        pid = _resolve_project(args)
+        interval = getattr(args, "interval", 30)
+        target_id = getattr(args, "target", None)
+        print(f"\n  Monitoring scanner for new findings (polling every {interval}s)...")
+        print("  Press Ctrl+C to stop.\n")
+        try:
+            scanner.monitor(pid, interval=interval, target_id=target_id)
+        except KeyboardInterrupt:
+            print("\n  Monitor stopped.")
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Main Entry Point
 # ═══════════════════════════════════════════════════════════════════
 
@@ -3363,6 +3470,7 @@ COMMAND_MAP = {
     "analyze": cmd_analyze,
     "js": cmd_js,
     "params": cmd_params,
+    "scanner": cmd_scanner,
 }
 
 

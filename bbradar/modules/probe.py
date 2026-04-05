@@ -274,6 +274,26 @@ def suggest_actions(intel: dict, port_filter: int = None,
                         "port": None,
                     })
 
+    # 4. Scanner suggestions — if HTTP ports are open, suggest live scanner scan
+    http_ports_open = [p for p in intel["ports"] if p["port"] in _HTTP_PORTS]
+    if http_ports_open:
+        for scanner_name, scanner_desc in [
+            ("zap", "OWASP ZAP active scan (requires running ZAP)"),
+            ("burp", "Burp Suite scan (requires running Burp Pro)"),
+        ]:
+            key = (scanner_name, "scanner")
+            if key not in seen:
+                seen.add(key)
+                ports_str = ", ".join(str(p["port"]) for p in http_ports_open[:5])
+                suggestions.append({
+                    "tool": scanner_name,
+                    "description": scanner_desc,
+                    "reason": f"HTTP port(s) open: {ports_str}",
+                    "extra_args": "",
+                    "port": None,
+                    "scanner": True,
+                })
+
     # Number them
     for i, s in enumerate(suggestions, 1):
         s["index"] = i

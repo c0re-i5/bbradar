@@ -230,6 +230,11 @@ CREATE TABLE IF NOT EXISTS vulns (
     status          TEXT    NOT NULL DEFAULT 'new',      -- new | confirmed | reported | accepted | duplicate | resolved | wontfix
     bounty_amount   REAL,
     report_url      TEXT,                               -- link to submitted report
+    source_tool     TEXT,                               -- tool that discovered this (burp, zap, nuclei, manual...)
+    confidence      TEXT,                               -- certain | firm | tentative
+    cwe_id          TEXT,                               -- e.g. CWE-79
+    cve_id          TEXT,                               -- e.g. CVE-2024-1234
+    owasp_category  TEXT,                               -- e.g. A03:2021
     created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
@@ -668,6 +673,13 @@ MIGRATIONS = [
             created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_recon_snapshots_project ON recon_snapshots(project_id);
+    """),
+    (7, "Add scanner metadata columns to vulns table", """
+        ALTER TABLE vulns ADD COLUMN source_tool TEXT;
+        ALTER TABLE vulns ADD COLUMN confidence TEXT;
+        ALTER TABLE vulns ADD COLUMN cwe_id TEXT;
+        ALTER TABLE vulns ADD COLUMN cve_id TEXT;
+        ALTER TABLE vulns ADD COLUMN owasp_category TEXT;
     """),
 ]
 
