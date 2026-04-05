@@ -6,7 +6,10 @@ Extracts open ports and services.
 """
 
 import json
+import logging
 from . import register_parser, make_finding
+
+logger = logging.getLogger(__name__)
 
 TOOL_NAME = "masscan"
 
@@ -44,7 +47,8 @@ def _parse_json(data: str) -> list[dict]:
 
     try:
         entries = json.loads(cleaned)
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning("Failed to parse %s JSON output: %s", TOOL_NAME, e)
         return findings
 
     for entry in entries:

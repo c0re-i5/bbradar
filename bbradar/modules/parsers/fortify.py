@@ -4,8 +4,11 @@ Fortify (Micro Focus / OpenText) output parser.
 Handles Fortify FPR XML extract and FVDL (Fortify Vulnerability Description Language) format.
 """
 
+import logging
 import defusedxml.ElementTree as ET
 from . import register_parser, make_finding
+
+logger = logging.getLogger(__name__)
 
 TOOL_NAME = "fortify"
 
@@ -51,7 +54,8 @@ def parse(data: str, filename: str = "") -> list[dict]:
 
     try:
         root = ET.fromstring(data)
-    except ET.ParseError:
+    except ET.ParseError as e:
+        logger.warning("Failed to parse %s XML output: %s", TOOL_NAME, e)
         return findings
 
     # Strip namespace for easier element finding

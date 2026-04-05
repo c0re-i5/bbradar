@@ -33,13 +33,13 @@ def list_notes(project_id: int = None, target_id: int = None, vuln_id: int = Non
     with get_connection(db_path) as conn:
         query = "SELECT * FROM notes WHERE 1=1"
         params: list = []
-        if project_id:
+        if project_id is not None:
             query += " AND project_id = ?"
             params.append(project_id)
-        if target_id:
+        if target_id is not None:
             query += " AND target_id = ?"
             params.append(target_id)
-        if vuln_id:
+        if vuln_id is not None:
             query += " AND vuln_id = ?"
             params.append(vuln_id)
         if tag:
@@ -81,7 +81,9 @@ def update_note(note_id: int, db_path=None, **kwargs) -> bool:
 def delete_note(note_id: int, db_path=None) -> bool:
     """Delete a note."""
     with get_connection(db_path) as conn:
-        conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+        cursor = conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+        if cursor.rowcount == 0:
+            return False
     log_action("deleted", "note", note_id, db_path=db_path)
     return True
 
@@ -97,7 +99,7 @@ def export_notes(project_id: int = None, output_path: str = None,
         return ""
 
     lines = ["# Assessment Notes\n"]
-    if project_id:
+    if project_id is not None:
         from .projects import get_project
         proj = get_project(project_id, db_path)
         if proj:

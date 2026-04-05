@@ -8,6 +8,7 @@ automatically ingested into the database.
 
 import json
 import shlex
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -42,7 +43,6 @@ def list_workflows() -> list[dict]:
                     "steps": len(data.get("steps", [])),
                 })
             except Exception as e:
-                import sys
                 print(f"  warning: could not load workflow {f.name}: {e}", file=sys.stderr)
     return workflows
 
@@ -258,10 +258,10 @@ def list_workflow_runs(project_id: int = None, target_id: int = None,
     with get_connection(db_path) as conn:
         query = "SELECT * FROM workflow_runs WHERE 1=1"
         params: list = []
-        if project_id:
+        if project_id is not None:
             query += " AND project_id = ?"
             params.append(project_id)
-        if target_id:
+        if target_id is not None:
             query += " AND target_id = ?"
             params.append(target_id)
         query += " ORDER BY started_at DESC LIMIT ?"

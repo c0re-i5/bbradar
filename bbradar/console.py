@@ -156,15 +156,19 @@ class BBConsole(cmd.Cmd):
             try:
                 from .modules import projects
                 p = projects.get_project(pid)
-                name = p["name"] if p else f"#{pid}"
-                # Truncate long names
-                if len(name) > 25:
-                    name = name[:22] + "..."
-                self.prompt = f"\033[1;31mbb\033[0m (\033[1;33m{name}\033[0m) > "
+                if p:
+                    name = p["name"]
+                    if len(name) > 25:
+                        name = name[:22] + "..."
+                    self.prompt = f"\033[1;31mbb\033[0m:\033[1;33m{name}\033[0;36m#{pid}\033[0m \033[1;31m❯\033[0m "
+                else:
+                    # Project was deleted — clear stale reference
+                    clear_active_project()
+                    self.prompt = f"\033[1;31mbb ❯\033[0m "
             except Exception:
-                self.prompt = f"\033[1;31mbb\033[0m (#{pid}) > "
+                self.prompt = f"\033[1;31mbb\033[0m:\033[0;36m#{pid}\033[0m \033[1;31m❯\033[0m "
         else:
-            self.prompt = "\033[1;31mbb\033[0m > "
+            self.prompt = f"\033[1;31mbb ❯\033[0m "
 
     # ── Lifecycle ─────────────────────────────────────────────────
 

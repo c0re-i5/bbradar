@@ -2,6 +2,47 @@
 
 All notable changes to BBRadar will be documented in this file.
 
+## [0.5.6] — 2026-04-05
+
+### Fixed
+
+- **[HIGH] TOCTOU race conditions in vulns.py** — `update_vuln` status
+  transition check, `add_evidence` read-modify-write, and `merge_vulns`
+  reads+writes all moved into a single `get_connection()` block to prevent
+  concurrent modification races
+- **[HIGH] Falsy-zero ID checks** — 14 sites across 6 modules changed
+  `if project_id:` → `if project_id is not None:` so ID 0 is handled
+  correctly (`vulns.py`, `notes.py`, `projects.py`, `recon.py`,
+  `reports.py`, `workflows.py`)
+- **[MEDIUM] Silent parser failures** — 12 parsers now log a warning via
+  `logging.warning()` instead of silently returning `[]` on parse errors
+  (`nmap`, `burp`, `acunetix`, `fortify`, `veracode`, `qualys`, `ffuf`,
+  `semgrep`, `testssl`, `wpscan`, `metasploit`, `masscan`)
+- **[MEDIUM] Swallowed exceptions** — `database.py` migration failures,
+  `hackerone.py` `import_program` / `sync_scope` target and rule errors
+  now log warnings instead of silently passing
+- **[MEDIUM] ReDoS protection in scope.py** — `_validate_pattern()` now
+  strips escape sequences before detecting nested quantifiers, and rejects
+  regex patterns longer than 1024 characters
+- **[MEDIUM] Stale active project after delete** — deleting the active
+  project now clears the active project reference; console prompt
+  auto-clears if the project no longer exists (`cli.py`, `console.py`)
+- **[LOW] delete_* silent failures** — `delete_vuln`, `delete_target`,
+  `delete_note`, `delete_recon`, `delete_rule` now check `cursor.rowcount`
+  and return `False` for non-existent IDs
+- **[LOW] Inline `import sys`** — moved to top-level imports in 6 modules
+  (`targets.py`, `recon.py`, `vulns.py`, `workflows.py`, `hackerone.py`,
+  `wizards.py`)
+
+### Changed
+
+- **Console prompt restyled** — new compact `bb:ProjectName#id ❯` format
+  (msfconsole-inspired) replaces the old `bb (ProjectName) >` style
+- **N+1 queries in `get_project_stats`** — consolidated 4 separate COUNT
+  queries into a single query with scalar subqueries (`projects.py`)
+- **Fragile query building in `list_recon`** — replaced `"rd." not in query`
+  substring detection with a `col` prefix variable (`recon.py`)
+
 ## [0.5.5] — 2026-03-31
 
 ### Fixed

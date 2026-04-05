@@ -6,6 +6,7 @@ submission and resolution.
 """
 
 import json
+import sys
 from pathlib import Path
 
 from ..core.database import get_connection
@@ -54,7 +55,6 @@ def create_vuln(project_id: int, title: str, severity: str = "medium",
     if cvss_vector:
         cvss_error = validate_cvss_vector(cvss_vector)
         if cvss_error:
-            import sys
             print(f"  ⚠ Warning: {cvss_error}", file=sys.stderr)
 
     evidence_json = json.dumps(evidence) if evidence else None
@@ -91,7 +91,7 @@ def list_vulns(project_id: int = None, severity: str = None, status: str = None,
     with get_connection(db_path) as conn:
         query = "SELECT * FROM vulns WHERE 1=1"
         params: list = []
-        if project_id:
+        if project_id is not None:
             query += " AND project_id = ?"
             params.append(project_id)
         if severity:
@@ -103,7 +103,7 @@ def list_vulns(project_id: int = None, severity: str = None, status: str = None,
         if vuln_type:
             query += " AND vuln_type = ?"
             params.append(vuln_type)
-        if target_id:
+        if target_id is not None:
             query += " AND target_id = ?"
             params.append(target_id)
         query += " ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 WHEN 'low' THEN 4 ELSE 5 END, updated_at DESC"
@@ -139,15 +139,6 @@ def update_vuln(vuln_id: int, db_path=None, **kwargs) -> bool:
         new_status = updates["status"].lower()
         if new_status not in VALID_STATUSES:
             raise ValueError(f"Invalid status '{new_status}'. Valid: {VALID_STATUSES}")
-        current_vuln = get_vuln(vuln_id, db_path)
-        if current_vuln:
-            old_status = current_vuln["status"]
-            allowed_next = STATUS_TRANSITIONS.get(old_status, set())
-            if new_status != old_status and new_status not in allowed_next:
-                raise ValueError(
-                    f"Cannot transition from '{old_status}' to '{new_status}'. "
-                    f"Allowed: {sorted(allowed_next)}"
-                )
         updates["status"] = new_status
 
     if "severity" in updates:
@@ -158,6 +149,18 @@ def update_vuln(vuln_id: int, db_path=None, **kwargs) -> bool:
     set_clause = ", ".join(f"{k} = ?" for k in updates)
     values = list(updates.values()) + [vuln_id]
     with get_connection(db_path) as conn:
+        # Validate status transition in same transaction as the update
+        if "status" in updates:
+            row = conn.execute("SELECT * FROM vulns WHERE id = ?", (vuln_id,)).fetchone()
+            if row:
+                current_vuln = dict(row)
+                old_status = current_vuln["status"]
+                allowed_next = STATUS_TRANSITIONS.get(old_status, set())
+                if updates["status"] != old_status and updates["status"] not in allowed_next:
+                    raise ValueError(
+                        f"Cannot transition from '{old_status}' to '{updates['status']}'. "
+                        f"Allowed: {sorted(allowed_next)}"
+                    )
         conn.execute(f"UPDATE vulns SET {set_clause} WHERE id = ?", values)
     log_action("updated", "vuln", vuln_id, updates, db_path)
 
@@ -183,7 +186,9 @@ def update_vuln(vuln_id: int, db_path=None, **kwargs) -> bool:
 def delete_vuln(vuln_id: int, db_path=None) -> bool:
     """Delete a vulnerability."""
     with get_connection(db_path) as conn:
-        conn.execute("DELETE FROM vulns WHERE id = ?", (vuln_id,))
+        cursor = conn.execute("DELETE FROM vulns WHERE id = ?", (vuln_id,))
+        if cursor.rowcount == 0:
+            return False
     log_action("deleted", "vuln", vuln_id, db_path=db_path)
     return True
 
@@ -203,14 +208,20 @@ def add_evidence(vuln_id: int, file_path: str, db_path=None) -> bool:
                 f"Maximum: {max_size / 1024 / 1024:.0f} MB"
             )
 
-    vuln = get_vuln(vuln_id, db_path)
-    if not vuln:
-        return False
-    evidence = json.loads(vuln["evidence"]) if vuln["evidence"] else []
-    if file_path not in evidence:
+    with get_connection(db_path) as conn:
+        row = conn.execute("SELECT evidence FROM vulns WHERE id = ?", (vuln_id,)).fetchone()
+        if not row:
+            return False
+        evidence = json.loads(row["evidence"]) if row["evidence"] else []
+        if file_path in evidence:
+            return False
         evidence.append(file_path)
-        return update_vuln(vuln_id, evidence=evidence, db_path=db_path)
-    return False
+        conn.execute(
+            "UPDATE vulns SET evidence = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(evidence), timestamp_now(), vuln_id),
+        )
+    log_action("updated", "vuln", vuln_id, {"evidence_added": file_path}, db_path)
+    return True
 
 
 def get_vuln_stats(project_id: int = None, db_path=None) -> dict:
@@ -285,35 +296,37 @@ def find_duplicates(vuln_id: int, db_path=None) -> list[dict]:
 
 def merge_vulns(source_id: int, target_id: int, db_path=None) -> bool:
     """Merge source vuln into target: combines evidence, notes, and marks source as duplicate."""
-    source = get_vuln(source_id, db_path)
-    target_v = get_vuln(target_id, db_path)
-    if not source or not target_v:
-        return False
-
-    # Merge evidence lists
-    src_ev = json.loads(source["evidence"]) if source.get("evidence") else []
-    tgt_ev = json.loads(target_v["evidence"]) if target_v.get("evidence") else []
-    merged_ev = list(dict.fromkeys(tgt_ev + src_ev))  # dedup preserving order
-
-    # Merge descriptions
-    merged_desc = target_v.get("description") or ""
-    if source.get("description"):
-        src_desc = source["description"]
-        if src_desc not in merged_desc:
-            merged_desc += f"\n\n--- Merged from vuln #{source_id} ---\n{src_desc}"
-
-    # Use the higher CVSS / more severe rating
-    sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "informational": 4}
-    best_sev = target_v["severity"]
-    if sev_order.get(source["severity"], 4) < sev_order.get(target_v["severity"], 4):
-        best_sev = source["severity"]
-
-    best_cvss = max(
-        source.get("cvss_score") or 0,
-        target_v.get("cvss_score") or 0,
-    ) or None
-
     with get_connection(db_path) as conn:
+        source_row = conn.execute("SELECT * FROM vulns WHERE id = ?", (source_id,)).fetchone()
+        target_row = conn.execute("SELECT * FROM vulns WHERE id = ?", (target_id,)).fetchone()
+        if not source_row or not target_row:
+            return False
+        source = dict(source_row)
+        target_v = dict(target_row)
+
+        # Merge evidence lists
+        src_ev = json.loads(source["evidence"]) if source.get("evidence") else []
+        tgt_ev = json.loads(target_v["evidence"]) if target_v.get("evidence") else []
+        merged_ev = list(dict.fromkeys(tgt_ev + src_ev))  # dedup preserving order
+
+        # Merge descriptions
+        merged_desc = target_v.get("description") or ""
+        if source.get("description"):
+            src_desc = source["description"]
+            if src_desc not in merged_desc:
+                merged_desc += f"\n\n--- Merged from vuln #{source_id} ---\n{src_desc}"
+
+        # Use the higher CVSS / more severe rating
+        sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "informational": 4}
+        best_sev = target_v["severity"]
+        if sev_order.get(source["severity"], 4) < sev_order.get(target_v["severity"], 4):
+            best_sev = source["severity"]
+
+        best_cvss = max(
+            source.get("cvss_score") or 0,
+            target_v.get("cvss_score") or 0,
+        ) or None
+
         # Update target vuln
         conn.execute(
             """UPDATE vulns SET evidence = ?, description = ?, severity = ?,

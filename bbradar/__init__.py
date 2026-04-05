@@ -5,5 +5,5 @@ A systematic environment for conducting security assessments and bug bounty hunt
 with full documentation, secure data handling, and professional report generation.
 """
 
-__version__ = "0.5.5"
+__version__ = "0.5.6"
 __author__ = "BBRadar"

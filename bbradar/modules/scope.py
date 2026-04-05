@@ -148,7 +148,9 @@ def update_rule(rule_id: int, db_path=None, **kwargs) -> bool:
 def delete_rule(rule_id: int, db_path=None) -> bool:
     """Delete a scope rule."""
     with get_connection(db_path) as conn:
-        conn.execute("DELETE FROM scope_rules WHERE id = ?", (rule_id,))
+        cursor = conn.execute("DELETE FROM scope_rules WHERE id = ?", (rule_id,))
+        if cursor.rowcount == 0:
+            return False
     log_action("deleted", "scope_rule", rule_id, db_path=db_path)
     return True
 
@@ -707,16 +709,18 @@ def _detect_pattern_type(pattern: str) -> str:
 def _validate_pattern(pattern: str, pattern_type: str):
     """Validate that a pattern is syntactically correct."""
     if pattern_type == "regex":
+        if len(pattern) > 1024:
+            raise ValueError("Regex pattern too long (max 1024 characters)")
         try:
-            compiled = re.compile(pattern)
+            re.compile(pattern)
         except re.error as e:
             raise ValueError(f"Invalid regex pattern: {e}")
-        # Basic ReDoS protection: reject patterns with nested quantifiers
-        if re.search(r'(\(.*[*+].*\))[*+?]', pattern):
-            raise ValueError(
-                "Regex pattern rejected: nested quantifiers may cause catastrophic backtracking"
-            )
-        if re.search(r'(\.[*+]|\[.*\])[*+?]\)?[*+?]', pattern):
+        # ReDoS protection: reject patterns with nested quantifiers.
+        # Strip escape sequences so we only analyse structural metacharacters.
+        stripped = re.sub(r'\\.', '', pattern)
+        # Detect a quantifier (*+?}) closing a group followed by another
+        # quantifier on the group itself:  (a+)+  (x*y?)+  (a{2,})*  (?:a+b?)+
+        if re.search(r'[*+?}]\)[*+?{]', stripped):
             raise ValueError(
                 "Regex pattern rejected: nested quantifiers may cause catastrophic backtracking"
             )

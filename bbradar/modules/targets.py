@@ -4,6 +4,8 @@ Target management module.
 Handles assets (domains, IPs, URLs, APIs, etc.) associated with projects.
 """
 
+import sys
+
 from ..core.database import get_connection
 from ..core.audit import log_action
 from ..core.utils import timestamp_now, validate_target_value
@@ -32,7 +34,6 @@ def add_target(project_id: int, asset_type: str, value: str,
     # Validate target value format
     validation_error = validate_target_value(value, asset_type)
     if validation_error:
-        import sys
         print(f"  ⚠ Warning: {validation_error}", file=sys.stderr)
     with get_connection(db_path) as conn:
         cursor = conn.execute(
@@ -73,12 +74,10 @@ def bulk_add_targets(project_id: int, asset_type: str, values: list[str],
                {"project_id": project_id, "asset_type": asset_type,
                 "added": added, "skipped": skipped, "errors": len(errors)}, db_path)
     if errors:
-        import sys
         print(f"  ⚠ {len(errors)} target(s) failed:", file=sys.stderr)
         for err in errors[:10]:
             print(f"    {err}", file=sys.stderr)
     if skipped:
-        import sys
         print(f"  ℹ {skipped} duplicate(s) skipped", file=sys.stderr)
     return added
 
@@ -127,7 +126,9 @@ def update_target(target_id: int, db_path=None, **kwargs) -> bool:
 def delete_target(target_id: int, db_path=None) -> bool:
     """Delete a target and its recon data (cascades)."""
     with get_connection(db_path) as conn:
-        conn.execute("DELETE FROM targets WHERE id = ?", (target_id,))
+        cursor = conn.execute("DELETE FROM targets WHERE id = ?", (target_id,))
+        if cursor.rowcount == 0:
+            return False
     log_action("deleted", "target", target_id, db_path=db_path)
     return True
 

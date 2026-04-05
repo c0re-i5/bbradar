@@ -6,7 +6,10 @@ Parses WordPress core, plugin, theme, and user enumeration findings.
 """
 
 import json
+import logging
 from . import register_parser, make_finding
+
+logger = logging.getLogger(__name__)
 
 TOOL_NAME = "wpscan"
 
@@ -36,7 +39,8 @@ def parse(data: str, filename: str = "") -> list[dict]:
 
     try:
         parsed = json.loads(data)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        logger.warning("Failed to parse %s JSON output: %s", TOOL_NAME, e)
         return findings
 
     if not isinstance(parsed, dict):

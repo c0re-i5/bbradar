@@ -900,6 +900,8 @@ def cmd_project(args):
     elif args.subcmd == "delete":
         if confirm(f"Delete project #{args.id} and ALL related data?"):
             projects.delete_project(args.id)
+            if get_active_project() == args.id:
+                clear_active_project()
             print(f"✓ Deleted project #{args.id}")
 
     elif args.subcmd == "stats":

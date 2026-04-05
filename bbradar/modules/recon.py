@@ -9,6 +9,7 @@ import json
 import re
 import shlex
 import sqlite3
+import sys
 from pathlib import Path
 
 from ..core.database import get_connection
@@ -71,7 +72,6 @@ def bulk_add_recon(target_id: int, data_type: str, values: list[str],
                 if cursor.rowcount > 0:
                     count += 1
             except Exception as e:
-                import sys
                 print(f"  warning: skipped recon '{val}': {e}", file=sys.stderr)
     log_action("bulk_created", "recon", None,
                {"target_id": target_id, "data_type": data_type, "count": count, "source_tool": source_tool},
@@ -83,22 +83,24 @@ def list_recon(target_id: int = None, data_type: str = None, source_tool: str = 
                project_id: int = None, limit: int = 500, db_path=None) -> list[dict]:
     """Query recon data with optional filters."""
     with get_connection(db_path) as conn:
-        if project_id:
+        if project_id is not None:
             query = """SELECT rd.* FROM recon_data rd
                        JOIN targets t ON rd.target_id = t.id
                        WHERE t.project_id = ?"""
             params: list = [project_id]
+            col = "rd."
         else:
             query = "SELECT * FROM recon_data WHERE 1=1"
             params = []
-        if target_id:
-            query += " AND target_id = ?" if "rd." not in query else " AND rd.target_id = ?"
+            col = ""
+        if target_id is not None:
+            query += f" AND {col}target_id = ?"
             params.append(target_id)
         if data_type:
-            query += " AND data_type = ?" if "rd." not in query else " AND rd.data_type = ?"
+            query += f" AND {col}data_type = ?"
             params.append(data_type)
         if source_tool:
-            query += " AND source_tool = ?" if "rd." not in query else " AND rd.source_tool = ?"
+            query += f" AND {col}source_tool = ?"
             params.append(source_tool)
         query += f" ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
@@ -110,7 +112,7 @@ def get_recon_summary(target_id: int = None, project_id: int = None,
                       db_path=None) -> dict:
     """Get count of recon data grouped by type."""
     with get_connection(db_path) as conn:
-        if project_id:
+        if project_id is not None:
             rows = conn.execute(
                 """SELECT rd.data_type, COUNT(*) as cnt FROM recon_data rd
                    JOIN targets t ON rd.target_id = t.id
@@ -118,7 +120,7 @@ def get_recon_summary(target_id: int = None, project_id: int = None,
                    GROUP BY rd.data_type ORDER BY cnt DESC""",
                 (project_id,),
             ).fetchall()
-        elif target_id:
+        elif target_id is not None:
             rows = conn.execute(
                 """SELECT data_type, COUNT(*) as cnt FROM recon_data
                    WHERE target_id = ? GROUP BY data_type ORDER BY cnt DESC""",
@@ -131,11 +133,14 @@ def get_recon_summary(target_id: int = None, project_id: int = None,
     return {row["data_type"]: row["cnt"] for row in rows}
 
 
-def delete_recon(recon_id: int, db_path=None):
+def delete_recon(recon_id: int, db_path=None) -> bool:
     """Delete a single recon entry."""
     with get_connection(db_path) as conn:
-        conn.execute("DELETE FROM recon_data WHERE id = ?", (recon_id,))
+        cursor = conn.execute("DELETE FROM recon_data WHERE id = ?", (recon_id,))
+        if cursor.rowcount == 0:
+            return False
     log_action("deleted", "recon", recon_id, db_path=db_path)
+    return True
 
 
 def export_recon(target_id: int = None, project_id: int = None,

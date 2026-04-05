@@ -6,8 +6,11 @@ Handles Qualys CSV and XML scan report exports from Qualys WAS and VM.
 
 import csv
 import io
+import logging
 import defusedxml.ElementTree as ET
 from . import register_parser, make_finding
+
+logger = logging.getLogger(__name__)
 
 TOOL_NAME = "qualys"
 
@@ -45,7 +48,8 @@ def _parse_xml(data: str) -> list[dict]:
     findings = []
     try:
         root = ET.fromstring(data)
-    except ET.ParseError:
+    except ET.ParseError as e:
+        logger.warning("Failed to parse %s XML output: %s", TOOL_NAME, e)
         return findings
 
     # WAS format: <WAS_SCAN_REPORT> → <GLOSSARY> → <QID_LIST> → <QID>

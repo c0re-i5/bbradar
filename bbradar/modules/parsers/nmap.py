@@ -5,8 +5,11 @@ Handles Nmap XML output (-oX).  Extracts open ports, service versions,
 OS detection, and NSE script findings.
 """
 
+import logging
 import defusedxml.ElementTree as ET
 from . import register_parser, make_finding
+
+logger = logging.getLogger(__name__)
 
 TOOL_NAME = "nmap"
 
@@ -45,7 +48,8 @@ def parse(data: str, filename: str = "") -> list[dict]:
 
     try:
         root = ET.fromstring(data)
-    except ET.ParseError:
+    except ET.ParseError as e:
+        logger.warning("Failed to parse %s XML output: %s", TOOL_NAME, e)
         return findings
 
     for host_el in root.findall(".//host"):

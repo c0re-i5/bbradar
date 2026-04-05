@@ -6,9 +6,12 @@ the workspace directory — no external services required.
 """
 
 import sqlite3
+import logging
 import os
 from contextlib import contextmanager
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Default data directory
 DEFAULT_DATA_DIR = Path.home() / ".bbradar"
@@ -43,7 +46,8 @@ def get_connection(db_path: Path | None = None):
                 if version > current:
                     try:
                         conn.executescript(sql)
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("Migration %d (%s) failed: %s", version, _desc, e)
                         conn.rollback()
                         break
                     conn.execute(f"PRAGMA user_version = {version}")

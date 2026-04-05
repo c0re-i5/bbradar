@@ -10,7 +10,9 @@ Rate limit: 600 requests/minute
 """
 
 import json
+import logging
 import os
+import sys
 from base64 import b64encode
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -18,6 +20,8 @@ from urllib.request import Request, urlopen
 
 from ..core.audit import log_action
 from ..core.config import load_config, set_config_value
+
+logger = logging.getLogger(__name__)
 
 API_BASE = "https://api.hackerone.com/v1/hackers"
 
@@ -143,7 +147,6 @@ def _paginate(endpoint, params=None, max_pages=10):
     while page <= max_pages:
         params["page[number]"] = str(page)
         if page > 1:
-            import sys
             print(f"  Fetching page {page}... ({len(all_data)} items so far)",
                   file=sys.stderr, flush=True)
         result = _api_request(endpoint, params)
@@ -433,15 +436,15 @@ def import_program(handle: str, db_path=None) -> dict:
         try:
             add_target(pid, asset_type, asset, in_scope=in_scope, db_path=db_path)
             targets_added += 1
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to add target %r for program %s: %s", asset, handle, e)
 
         try:
             add_rule(pid, asset, rule_type="include" if in_scope else "exclude",
                      source="hackerone", db_path=db_path)
             rules_added += 1
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to add scope rule %r for program %s: %s", asset, handle, e)
 
     log_action("imported_program", "hackerone", pid,
                {"handle": handle, "targets": targets_added, "rules": rules_added},
@@ -480,8 +483,8 @@ def sync_scope(project_id: int, handle: str, db_path=None) -> dict:
                 add_target(project_id, asset_type, asset, in_scope=in_scope,
                            db_path=db_path)
                 new_targets += 1
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to add target %r during scope sync: %s", asset, e)
 
         if asset not in existing_rules:
             try:
@@ -489,8 +492,8 @@ def sync_scope(project_id: int, handle: str, db_path=None) -> dict:
                 add_rule(project_id, asset, rule_type=rule_type,
                          source="hackerone", db_path=db_path)
                 new_rules += 1
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to add scope rule %r during sync: %s", asset, e)
 
     log_action("synced_scope", "hackerone", project_id,
                {"handle": handle, "new_targets": new_targets, "new_rules": new_rules},

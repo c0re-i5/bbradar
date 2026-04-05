@@ -43,7 +43,7 @@ def list_projects(status: str = None, db_path=None) -> list[dict]:
 def get_project(project_id: int = None, name: str = None, db_path=None) -> dict | None:
     """Get a single project by ID or name."""
     with get_connection(db_path) as conn:
-        if project_id:
+        if project_id is not None:
             row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
         elif name:
             row = conn.execute("SELECT * FROM projects WHERE name = ?", (name,)).fetchone()
@@ -85,31 +85,26 @@ def delete_project(project_id: int, db_path=None) -> bool:
 def get_project_stats(project_id: int, db_path=None) -> dict:
     """Get summary statistics for a project."""
     with get_connection(db_path) as conn:
-        targets = conn.execute(
-            "SELECT COUNT(*) as cnt FROM targets WHERE project_id = ?", (project_id,)
-        ).fetchone()["cnt"]
-        vulns = conn.execute(
-            "SELECT COUNT(*) as cnt FROM vulns WHERE project_id = ?", (project_id,)
-        ).fetchone()["cnt"]
+        counts = conn.execute(
+            """SELECT
+                (SELECT COUNT(*) FROM targets WHERE project_id = ?) AS target_count,
+                (SELECT COUNT(*) FROM vulns WHERE project_id = ?) AS vuln_count,
+                (SELECT COUNT(*) FROM notes WHERE project_id = ?) AS note_count,
+                (SELECT COUNT(*) FROM recon_data rd
+                 JOIN targets t ON rd.target_id = t.id
+                 WHERE t.project_id = ?) AS recon_count""",
+            (project_id, project_id, project_id, project_id),
+        ).fetchone()
         vuln_by_severity = {}
         for row in conn.execute(
             "SELECT severity, COUNT(*) as cnt FROM vulns WHERE project_id = ? GROUP BY severity",
             (project_id,),
         ):
             vuln_by_severity[row["severity"]] = row["cnt"]
-        notes = conn.execute(
-            "SELECT COUNT(*) as cnt FROM notes WHERE project_id = ?", (project_id,)
-        ).fetchone()["cnt"]
-        recon = conn.execute(
-            """SELECT COUNT(*) as cnt FROM recon_data rd
-               JOIN targets t ON rd.target_id = t.id
-               WHERE t.project_id = ?""",
-            (project_id,),
-        ).fetchone()["cnt"]
     return {
-        "targets": targets,
-        "vulns_total": vulns,
+        "targets": counts["target_count"],
+        "vulns_total": counts["vuln_count"],
         "vulns_by_severity": vuln_by_severity,
-        "notes": notes,
-        "recon_data_points": recon,
+        "notes": counts["note_count"],
+        "recon_data_points": counts["recon_count"],
     }

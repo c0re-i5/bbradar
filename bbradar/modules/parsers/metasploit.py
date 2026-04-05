@@ -6,7 +6,10 @@ Handles Metasploit XML export (db_export) and JSON output formats.
 
 import defusedxml.ElementTree as ET
 import json
+import logging
 from . import register_parser, make_finding
+
+logger = logging.getLogger(__name__)
 
 TOOL_NAME = "metasploit"
 
@@ -43,7 +46,8 @@ def _parse_xml(data: str) -> list[dict]:
     findings = []
     try:
         root = ET.fromstring(data)
-    except ET.ParseError:
+    except ET.ParseError as e:
+        logger.warning("Failed to parse %s XML output: %s", TOOL_NAME, e)
         return findings
 
     # Parse vulns from db_export

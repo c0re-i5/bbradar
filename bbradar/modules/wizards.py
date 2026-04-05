@@ -599,7 +599,6 @@ def quick_vuln(template_key: str, project_id: int, endpoint: str,
     # Warn about potential duplicates (printed to stderr so scripts can ignore)
     dupes = find_duplicates(vid, db_path)
     if dupes:
-        import sys
         print(f"  ⚠ {len(dupes)} potential duplicate(s) — use 'bb vuln duplicates {vid}' to review.",
               file=sys.stderr)
 

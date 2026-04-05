@@ -159,7 +159,7 @@ def generate_executive_summary(project_id: int, format: str = "markdown",
 def list_reports(project_id: int = None, db_path=None) -> list[dict]:
     """List generated reports."""
     with get_connection(db_path) as conn:
-        if project_id:
+        if project_id is not None:
             rows = conn.execute(
                 "SELECT * FROM reports WHERE project_id = ? ORDER BY created_at DESC",
                 (project_id,),
