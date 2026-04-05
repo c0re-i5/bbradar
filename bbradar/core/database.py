@@ -404,6 +404,18 @@ CREATE TABLE IF NOT EXISTS kb_epss (
 );
 CREATE INDEX IF NOT EXISTS idx_kb_epss_score ON kb_epss(epss_score);
 
+-- ═══ Recon Snapshots (attack surface diffing) ═══
+
+CREATE TABLE IF NOT EXISTS recon_snapshots (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    label           TEXT,
+    snapshot_data   TEXT    NOT NULL,
+    entry_count     INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_recon_snapshots_project ON recon_snapshots(project_id);
+
 -- ═══ Scope Rules ═══
 
 -- Structured scope rules for pattern-based matching
@@ -645,6 +657,17 @@ MIGRATIONS = [
             synced_at       TEXT    NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_kb_epss_score ON kb_epss(epss_score);
+    """),
+    (6, "Add recon_snapshots table for attack surface diffing", """
+        CREATE TABLE IF NOT EXISTS recon_snapshots (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            label           TEXT,
+            snapshot_data   TEXT    NOT NULL,
+            entry_count     INTEGER NOT NULL DEFAULT 0,
+            created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_recon_snapshots_project ON recon_snapshots(project_id);
     """),
 ]
 

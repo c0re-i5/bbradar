@@ -483,6 +483,49 @@ def notify_new_programs(programs: list[dict], db_path=None) -> dict:
     }
 
 
+def notify_ingest_complete(result: dict, project_id: int, db_path=None) -> dict:
+    """
+    Send notifications after an ingest run completes with new findings.
+
+    Returns {discord: bool, desktop: bool, count: int}
+    """
+    created = len(result.get("created_ids", []))
+    if created == 0:
+        return {"discord": False, "desktop": False, "count": 0}
+
+    tool = result.get("tool", "unknown")
+    total = result.get("total_parsed", 0)
+    dups = result.get("duplicates", 0)
+    proj_label = _project_label(project_id)
+
+    status = get_status()
+    discord_ok = False
+    desktop_ok = False
+
+    if status["discord_ingest"]["configured"]:
+        content = (
+            f"📥 **Ingest complete** — {proj_label}\n"
+            f"Tool: `{tool}` | Parsed: {total} | New: {created} | Duplicates: {dups}"
+        )
+        discord_ok = _send_discord(content, webhook_url=_get_discord_webhook("ingest"))
+
+    if status["desktop"]["enabled"]:
+        desktop_ok = _send_desktop(
+            f"BBRadar: {created} new findings",
+            f"{tool} → {proj_label}: {created} new, {dups} duplicates",
+        )
+
+    log_action("ingest_notified", "notifier", None, {
+        "project_id": project_id,
+        "tool": tool,
+        "created": created,
+        "discord": discord_ok,
+        "desktop": desktop_ok,
+    }, db_path)
+
+    return {"discord": discord_ok, "desktop": desktop_ok, "count": created}
+
+
 def test_discord(event: str | None = None) -> bool:
     """Send a test message to verify Discord webhook is working.
 

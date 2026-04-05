@@ -1608,6 +1608,18 @@ def enrich_vuln(vuln: dict, db_path=None) -> dict:
         if nuclei_results:
             enrichment["related_nuclei"] = nuclei_results
 
+    # VRT priority mapping
+    title = vuln.get("title", "") or ""
+    vrt_query = vuln_type or title
+    if vrt_query:
+        vrt_results = browse_vrt(vrt_query, db_path)
+        if vrt_results:
+            enrichment["vrt"] = vrt_results[:5]
+            # Surface highest VRT priority
+            priorities = [v["priority"] for v in vrt_results if v.get("priority")]
+            if priorities:
+                enrichment["vrt_priority"] = priorities[0]
+
     # CVE / KEV / EPSS enrichment
     cve_ids = re.findall(r"CVE-\d{4}-\d{4,}", desc, re.IGNORECASE)
     # Also check explicit cve_id field

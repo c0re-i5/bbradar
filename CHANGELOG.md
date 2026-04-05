@@ -2,6 +2,51 @@
 
 All notable changes to BBRadar will be documented in this file.
 
+## [0.6.0] — 2026-04-05
+
+### Added
+
+- **Web page analyzer** (`bb analyze page <url>`) — passive page analysis:
+  technology fingerprinting (30+ signatures), security header audit (10 headers),
+  form/input discovery, JS file extraction, link/endpoint enumeration, HTML
+  comment extraction, cookie attribute analysis, meta tag leak detection.
+  Results stored as recon_data for target integration.
+- **JavaScript analysis pipeline** (`bb js analyze <target_id>`) — discovers
+  JS files from recon data, fetches and scans for: hardcoded secrets (AWS keys,
+  GitHub tokens, Slack webhooks, Firebase URLs, JWTs, private keys, generic API
+  keys), API endpoints, internal IPs, S3/GCS/Azure cloud URLs, source maps.
+  Also `bb js scan <url>` for single-file analysis.
+- **Parameter classification** (`bb params classify <target_id>`) — heuristic
+  classification of discovered parameters into vulnerability classes: IDOR, SSRF,
+  SQLi, XSS, LFI, open redirect, RCE, info leak. Confidence scoring (high/medium).
+  `bb params suggest` generates actionable test suggestions per parameter.
+- **Attack surface diffing** (`bb diff`) — snapshot recon state, compare snapshots,
+  detect changes. `bb diff snapshot` captures current state, `bb diff compare`
+  shows added/removed entries by data type, `bb diff current` auto-diffs against
+  last snapshot with optional Discord/desktop notifications.
+- **Parallel workflow execution** — workflow steps marked `parallel: true` now
+  run concurrently via ThreadPoolExecutor. Adjacent parallel steps are batched
+  automatically. Concurrency controlled by `max_parallel` workflow config
+  (default: 4).
+- **VRT enrichment in enrich_vuln()** — vulnerability enrichment now queries
+  the VRT knowledge base for priority classification alongside existing CWE,
+  CAPEC, nuclei, CVE, KEV, and EPSS data.
+- **34 new tests** covering all new modules (jsanalyzer, param_classifier,
+  analyzer, differ) — secret detection, endpoint extraction, parameter
+  classification, snapshot/diff operations, report formatting.
+
+### Fixed
+
+- **notify_ingest_complete()** — the function was called from `ingest.py` but
+  never defined in `notifier.py` (silently failing via ImportError catch). Now
+  properly implemented with Discord webhook and desktop notification support.
+
+### Infrastructure
+
+- Database migration #6: `recon_snapshots` table for attack surface diffing
+- 4 new CLI commands: `diff`, `analyze`, `js`, `params` (28 total commands)
+- 4 new modules: `analyzer.py`, `jsanalyzer.py`, `param_classifier.py`, `differ.py`
+
 ## [0.5.6] — 2026-04-05
 
 ### Fixed

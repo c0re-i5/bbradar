@@ -20,6 +20,10 @@ Commands:
     scope       Manage scope rules
     h1          HackerOne API — programs, reports, earnings
     dashboard   Combined BBRadar + HackerOne dashboard
+    diff        Attack surface diffing — snapshot, compare, detect changes
+    analyze     Web page analysis — tech, headers, forms, endpoints
+    js          JavaScript analysis — secrets, endpoints, source maps
+    params      Parameter classification — IDOR, SSRF, SQLi, XSS candidates
     audit       View / manage audit log
     evidence    Evidence file management
     config      View/edit configuration
@@ -46,6 +50,7 @@ from .core.utils import format_table, severity_color, confirm, set_no_color
 from .modules import projects, targets, recon, vulns, notes, reports, workflows
 from .modules import vuln_templates, knowledgebase, ingest, scope, hackerone, notifier
 from .modules import probe
+from .modules import differ, analyzer, jsanalyzer, param_classifier
 from .modules.wizards import wizard_project, wizard_target, wizard_vuln, quick_vuln
 
 
@@ -652,6 +657,58 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- dashboard ---
     sub.add_parser("dashboard", help="Show combined BBRadar + HackerOne dashboard")
+
+    # --- diff (attack surface diffing) ---
+    p_diff = sub.add_parser("diff", help="Attack surface diffing — snapshot, compare, detect changes")
+    sp_diff = p_diff.add_subparsers(dest="subcmd")
+
+    p = sp_diff.add_parser("snapshot", help="Take a snapshot of current recon data")
+    p.add_argument("--project", type=int, help="Project ID (default: active project)")
+    p.add_argument("--label", "-l", help="Optional label for the snapshot")
+
+    p = sp_diff.add_parser("list", help="List snapshots")
+    p.add_argument("--project", type=int, help="Project ID (default: active project)")
+    p.add_argument("--limit", type=int, default=20, help="Max snapshots to show")
+
+    p = sp_diff.add_parser("compare", help="Compare two snapshots")
+    p.add_argument("old_id", type=int, help="Older snapshot ID")
+    p.add_argument("new_id", type=int, help="Newer snapshot ID")
+
+    p = sp_diff.add_parser("current", help="Diff current recon against last snapshot")
+    p.add_argument("--project", type=int, help="Project ID (default: active project)")
+    p.add_argument("--notify", "-n", action="store_true", help="Send notifications on changes")
+
+    # --- analyze (web page analyzer) ---
+    p_analyze = sub.add_parser("analyze", help="Analyze a web page — tech, headers, forms, endpoints")
+    sp_analyze = p_analyze.add_subparsers(dest="subcmd")
+
+    p = sp_analyze.add_parser("page", help="Analyze a single URL")
+    p.add_argument("url", help="URL to analyze")
+    p.add_argument("--target", type=int, help="Target ID to store results")
+    p.add_argument("--no-store", action="store_true", help="Analysis only, don't store recon data")
+
+    # --- js (JS analysis pipeline) ---
+    p_js = sub.add_parser("js", help="JavaScript analysis — secrets, endpoints, source maps")
+    sp_js = p_js.add_subparsers(dest="subcmd")
+
+    p = sp_js.add_parser("analyze", help="Analyze JS files for a target")
+    p.add_argument("target_id", type=int, help="Target ID")
+    p.add_argument("--no-fetch", action="store_true", help="Skip fetching (only scan existing recon)")
+    p.add_argument("--max-files", type=int, default=50, help="Max JS files to fetch")
+
+    p = sp_js.add_parser("scan", help="Analyze a single JS file or URL")
+    p.add_argument("url", help="URL of JS file to analyze")
+    p.add_argument("--target", type=int, help="Target ID to store results")
+
+    # --- params (parameter classification) ---
+    p_params = sub.add_parser("params", help="Parameter classification — IDOR, SSRF, SQLi, XSS candidates")
+    sp_params = p_params.add_subparsers(dest="subcmd")
+
+    p = sp_params.add_parser("classify", help="Classify parameters for a target")
+    p.add_argument("target_id", type=int, help="Target ID")
+
+    p = sp_params.add_parser("suggest", help="Generate test suggestions from classified parameters")
+    p.add_argument("target_id", type=int, help="Target ID")
 
     return parser
 
@@ -3042,6 +3099,232 @@ def cmd_dashboard(args):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Diff (attack surface diffing)
+# ═══════════════════════════════════════════════════════════════════
+
+def _resolve_project(args) -> int:
+    """Get project ID from --project flag or active project context."""
+    pid = getattr(args, "project", None)
+    if pid:
+        return pid
+    active = get_active_project()
+    if active:
+        return active
+    print("❌ No project specified. Use --project <id> or 'bb use <id>'.", file=sys.stderr)
+    sys.exit(1)
+
+
+def cmd_diff(args):
+    subcmd = getattr(args, "subcmd", None)
+    if not subcmd:
+        print("Usage: bb diff {snapshot|list|compare|current}")
+        sys.exit(1)
+
+    if subcmd == "snapshot":
+        pid = _resolve_project(args)
+        label = getattr(args, "label", None) or ""
+        result = differ.snapshot_recon(pid, label=label)
+        sid = result["snapshot_id"]
+        print(f"✓ Snapshot [{sid}] created — {result['total_entries']} entries{f' ({label})' if label else ''}")
+
+    elif subcmd == "list":
+        pid = _resolve_project(args)
+        snaps = differ.list_snapshots(pid, limit=getattr(args, "limit", 20))
+        if not snaps:
+            print("No snapshots yet. Run 'bb diff snapshot' first.")
+            return
+        rows = []
+        for s in snaps:
+            rows.append([str(s["id"]), s["label"] or "-", str(s["entry_count"]), s["created_at"]])
+        print(format_table(["ID", "Label", "Entries", "Created"], rows))
+
+    elif subcmd == "compare":
+        result = differ.diff_snapshots(args.old_id, args.new_id)
+        if not result:
+            print("❌ Snapshot not found.", file=sys.stderr)
+            sys.exit(1)
+        _print_diff(result)
+
+    elif subcmd == "current":
+        pid = _resolve_project(args)
+        if getattr(args, "notify", False):
+            result = differ.auto_diff_and_notify(pid)
+        else:
+            result = differ.diff_current(pid)
+        if not result:
+            print("No previous snapshot to compare against. Taking first snapshot.")
+            differ.snapshot_recon(pid)
+            return
+        _print_diff(result)
+
+
+def _print_diff(result):
+    summary = result.get("summary", {})
+    total_added = sum(v.get("added", 0) for v in summary.values())
+    total_removed = sum(v.get("removed", 0) for v in summary.values())
+
+    if total_added == 0 and total_removed == 0:
+        print("No changes detected.")
+        return
+
+    print(f"\nAttack Surface Diff: +{total_added} added, -{total_removed} removed\n")
+    for dtype, counts in sorted(summary.items()):
+        parts = []
+        if counts.get("added"):
+            parts.append(f"+{counts['added']}")
+        if counts.get("removed"):
+            parts.append(f"-{counts['removed']}")
+        if parts:
+            print(f"  {dtype}: {', '.join(parts)}")
+
+    # Show details (first few)
+    added = result.get("added", [])
+    removed = result.get("removed", [])
+    if added:
+        print(f"\n  New entries (showing first 20):")
+        for entry in added[:20]:
+            print(f"    + [{entry['data_type']}] {entry['value']}")
+    if removed:
+        print(f"\n  Removed entries (showing first 20):")
+        for entry in removed[:20]:
+            print(f"    - [{entry['data_type']}] {entry['value']}")
+    print()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Analyze (web page analyzer)
+# ═══════════════════════════════════════════════════════════════════
+
+def cmd_analyze(args):
+    subcmd = getattr(args, "subcmd", None)
+    if not subcmd:
+        print("Usage: bb analyze page <url> [--target <id>]")
+        sys.exit(1)
+
+    if subcmd == "page":
+        url = args.url
+        target_id = getattr(args, "target", None)
+        no_store = getattr(args, "no_store", False)
+
+        if target_id and not no_store:
+            result = analyzer.analyze_and_store(url, target_id)
+        else:
+            result = analyzer.analyze_page(url)
+
+        if getattr(args, "json_output", False):
+            # Remove non-serializable bits
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print(analyzer.format_report(result))
+
+
+# ═══════════════════════════════════════════════════════════════════
+# JS (JavaScript analysis pipeline)
+# ═══════════════════════════════════════════════════════════════════
+
+def cmd_js(args):
+    subcmd = getattr(args, "subcmd", None)
+    if not subcmd:
+        print("Usage: bb js {analyze|scan}")
+        sys.exit(1)
+
+    if subcmd == "analyze":
+        tid = args.target_id
+        fetch = not getattr(args, "no_fetch", False)
+        max_files = getattr(args, "max_files", 50)
+        result = jsanalyzer.analyze_target(tid, fetch=fetch, max_files=max_files)
+
+        print(f"\nJS Analysis Complete:")
+        print(f"  JS files found:    {result['js_files']}")
+        print(f"  Files analyzed:    {result['analyzed']}")
+        print(f"  Secrets found:     {result['secrets']}")
+        print(f"  Endpoints found:   {result['endpoints']}")
+        print(f"  Cloud URLs:        {result.get('cloud_urls', 0)}")
+        print(f"  Internal IPs:      {result.get('internal_ips', 0)}")
+        if result.get("errors"):
+            print(f"  Fetch errors:      {result['errors']}")
+        print()
+
+    elif subcmd == "scan":
+        url = args.url
+        content = jsanalyzer._fetch_url(url)
+        if not content:
+            print(f"❌ Could not fetch {url}", file=sys.stderr)
+            sys.exit(1)
+
+        findings = jsanalyzer.analyze_js_content(content, url)
+        target_id = getattr(args, "target", None)
+
+        print(f"\nJS File Analysis: {url}\n")
+        if findings["secrets"]:
+            print(f"  Secrets ({len(findings['secrets'])}):")
+            for s in findings["secrets"]:
+                print(f"    [{s['type']}] {s['value'][:60]}")
+        if findings["endpoints"]:
+            print(f"\n  Endpoints ({len(findings['endpoints'])}):")
+            for ep in findings["endpoints"][:30]:
+                print(f"    {ep}")
+        if findings["internal_ips"]:
+            print(f"\n  Internal IPs: {', '.join(findings['internal_ips'])}")
+        if findings["cloud_urls"]:
+            print(f"\n  Cloud URLs ({len(findings['cloud_urls'])}):")
+            for c in findings["cloud_urls"]:
+                print(f"    [{c['type']}] {c['value']}")
+        if findings["sourcemaps"]:
+            print(f"\n  Source Maps:")
+            for sm in findings["sourcemaps"]:
+                print(f"    {sm}")
+        if findings["emails"]:
+            print(f"\n  Emails: {', '.join(findings['emails'][:20])}")
+
+        if not any(findings.values()):
+            print("  No findings.")
+
+        # Store if target specified
+        if target_id:
+            for s in findings["secrets"]:
+                recon.add_recon(target_id, "secret", f"[{s['type']}] {s['value']}", source_tool="jsanalyzer")
+            recon.bulk_add_recon(target_id, "endpoint", findings["endpoints"], source_tool="jsanalyzer")
+            print(f"\n  ✓ Stored results to target [{target_id}]")
+        print()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Params (parameter classification)
+# ═══════════════════════════════════════════════════════════════════
+
+def cmd_params(args):
+    subcmd = getattr(args, "subcmd", None)
+    if not subcmd:
+        print("Usage: bb params {classify|suggest}")
+        sys.exit(1)
+
+    if subcmd == "classify":
+        result = param_classifier.classify_target(args.target_id)
+        print(f"\nParameter Classification — {result['total_params']} params, {result['classified']} classified\n")
+        if result["classifications"]:
+            rows = []
+            for cls, count in sorted(result["classifications"].items(), key=lambda x: -x[1]):
+                rows.append([cls, str(count)])
+            print(format_table(["Vuln Class", "Params"], rows))
+        else:
+            print("  No classifiable parameters found.")
+        print()
+
+    elif subcmd == "suggest":
+        suggestions = param_classifier.suggest_tests(args.target_id)
+        if not suggestions:
+            print("No test suggestions (no classifiable parameters).")
+            return
+        print(f"\nSuggested Tests ({len(suggestions)})\n")
+        for s in suggestions:
+            ctx = f" @ {s['url_context']}" if s["url_context"] else ""
+            print(f"  [{s['confidence'].upper()}] {s['vuln_class']} — {s['param']}{ctx}")
+            print(f"         {s['test_suggestion']}")
+            print()
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Main Entry Point
 # ═══════════════════════════════════════════════════════════════════
 
@@ -3076,6 +3359,10 @@ COMMAND_MAP = {
     "evidence": cmd_evidence,
     "h1": cmd_h1,
     "dashboard": cmd_dashboard,
+    "diff": cmd_diff,
+    "analyze": cmd_analyze,
+    "js": cmd_js,
+    "params": cmd_params,
 }
 
 

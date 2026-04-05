@@ -61,6 +61,24 @@ BBRadar supports ingesting output from security tools. To add a new parser:
 Each finding dict should include: `title`, `severity`, `description`, and
 optionally `url`, `cwe`, `evidence`, `recommendation`.
 
+## Adding Analysis Modules
+
+BBRadar includes analysis modules that extract intelligence from targets:
+
+- **Web page analyzer** (`analyzer.py`) — passive page analysis storing results
+  as recon_data entries via `add_recon()` / `bulk_add_recon()`
+- **JS analyzer** (`jsanalyzer.py`) — JS file scanning for secrets and endpoints
+- **Parameter classifier** (`param_classifier.py`) — heuristic parameter
+  classification using regex pattern matching
+
+To add a new analyzer:
+
+1. Create `bbradar/modules/your_analyzer.py`
+2. Implement functions that accept `target_id` and `db_path` parameters
+3. Store results using `recon.add_recon()` or `recon.bulk_add_recon()`
+4. Add a CLI handler in `cli.py` (function + parser + COMMAND_MAP entry)
+5. Add tests in `tests/`
+
 ## Adding Workflow Templates
 
 Workflow YAML files live in `bbradar/data/workflows/`. Follow the existing

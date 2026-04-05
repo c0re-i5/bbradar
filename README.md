@@ -197,6 +197,65 @@ bb recon run nuclei 1 --args "-severity critical,high"
 Supported tools: subfinder, nmap, httpx, masscan, nikto, nuclei, gobuster,
 ffuf, whatweb, testssl, wpscan, amass, dig.
 
+### Web Page Analyzer
+
+Passive analysis of web pages — technology detection, security headers,
+form/input discovery, endpoint extraction, and more:
+
+```bash
+bb analyze page https://target.com          # Full page analysis report
+bb analyze page https://target.com --target 1  # Analyze and store as recon data
+bb analyze page https://target.com --no-store  # Report only, don't store
+bb --json analyze page https://target.com   # JSON output for scripting
+```
+
+Detects: 30+ technology signatures (frameworks, CDNs, CMSes), 10 security
+headers (HSTS, CSP, X-Frame-Options, etc.), forms with inputs, JS files,
+internal/external links, HTML comments, meta tag leaks, cookie attributes.
+
+### JavaScript Analysis Pipeline
+
+Extract secrets, endpoints, and intelligence from JavaScript files:
+
+```bash
+bb js analyze 1                     # Analyze all JS files for target 1
+bb js analyze 1 --max-files 100     # Increase file limit
+bb js analyze 1 --no-fetch          # Only scan existing recon data
+bb js scan https://cdn.target.com/app.js          # Analyze a single JS file
+bb js scan https://cdn.target.com/app.js --target 1  # Scan and store results
+```
+
+Detects: AWS access keys, GitHub tokens, Slack/Discord webhooks, Firebase URLs,
+S3/GCS/Azure storage URLs, JWTs, private keys, generic API keys, API endpoints,
+internal IPs, source map references.
+
+### Parameter Classification
+
+Classify discovered parameters by vulnerability affinity and generate test
+suggestions:
+
+```bash
+bb params classify 1                # Classify all parameters for target 1
+bb params suggest 1                 # Generate actionable test cases
+```
+
+Classifies parameters into: IDOR, SSRF, SQLi, XSS, LFI/path traversal, open
+redirect, RCE, information disclosure. Each classification includes a confidence
+level (high/medium) and specific test suggestions.
+
+### Attack Surface Diffing
+
+Snapshot recon state and detect changes over time:
+
+```bash
+bb diff snapshot                    # Snapshot current recon (uses active project)
+bb diff snapshot --label "baseline" # With a label
+bb diff list                        # List all snapshots
+bb diff compare 1 2                 # Compare two snapshots
+bb diff current                     # Diff current state vs last snapshot
+bb diff current --notify            # Diff and send Discord/desktop alerts
+```
+
 ### Probe System
 
 Analyze discovered recon data and get actionable follow-up suggestions:
@@ -262,6 +321,9 @@ Pre-built assessment workflows that guide you through multi-step processes:
 - **vuln-scan** — Automated scanning with Nuclei, Nikto, security headers, SSL/TLS analysis
 - **web-audit** — Web application audit: whatweb → gobuster → ffuf → nuclei → nikto → testssl
 - **wordpress-audit** — WordPress-specific: whatweb → wpscan → nuclei (WP tags) → gobuster → nikto
+
+Workflow steps marked `parallel: true` run concurrently via thread pool.
+Concurrency is controlled by `max_parallel` in the workflow YAML (default: 4).
 
 ```bash
 bb workflow list
@@ -449,6 +511,10 @@ bb db status                # Show DB version and migration state
 | `bb templates` | Browse / search vulnerability templates |
 | `bb kb` | Knowledge base (sync, search, cve, kev, enrich, stats) |
 | `bb probe` | Analyze recon data and suggest follow-up actions |
+| `bb analyze` | Web page analysis (tech, headers, forms, endpoints, JS) |
+| `bb js` | JavaScript analysis (secrets, endpoints, source maps) |
+| `bb params` | Parameter classification (IDOR, SSRF, SQLi, XSS, etc.) |
+| `bb diff` | Attack surface diffing (snapshot, compare, current) |
 | `bb console` | Launch interactive console (msfconsole-style) |
 | `bb h1` | HackerOne API (auth, programs, import, reports, earnings) |
 | `bb dashboard` | Combined BBRadar + HackerOne dashboard |
@@ -498,6 +564,10 @@ bbradar/
 │   ├── workflows.py    # Workflow engine
 │   ├── wizards.py      # Interactive wizards
 │   ├── kb.py           # Knowledge base sync + search (CWE, CAPEC, VRT, Nuclei, CVE, KEV, EPSS)
+│   ├── analyzer.py     # Web page passive analysis (tech, headers, forms, endpoints)
+│   ├── jsanalyzer.py   # JavaScript file analysis (secrets, endpoints, source maps)
+│   ├── param_classifier.py  # Parameter vulnerability classification
+│   ├── differ.py       # Attack surface diffing (snapshot, compare, notify)
 │   └── parsers/        # 20 tool-specific output parsers
 ├── templates/           # Vulnerability templates (reserved)
 └── workflows/           # Workflow definitions (6 YAML files)
