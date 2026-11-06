@@ -42,6 +42,45 @@ CONFIDENCE_MAP_BURP = {
     "certain": "certain", "firm": "firm", "tentative": "tentative",
 }
 
+# Terminal statuses for a persisted scan run. ``running`` is not terminal.
+SCAN_STATUSES = (
+    "running", "completed", "failed", "stopped", "paused", "timed_out", "cancelled",
+)
+_TERMINAL_SCAN_STATUSES = set(SCAN_STATUSES) - {"running"}
+
+DEFAULT_SPIDER_TIMEOUT = 1800
+DEFAULT_SCAN_TIMEOUT = 3600
+
+_ZAP_STATE_MAP = {
+    "FINISHED": "completed",
+    "COMPLETE": "completed",
+    "COMPLETED": "completed",
+    "PAUSED": "paused",
+    "STOPPED": "stopped",
+    "ABORTED": "stopped",
+    "CANCELLED": "cancelled",
+    "CANCELED": "cancelled",
+    "FAILED": "failed",
+    "ERROR": "failed",
+}
+_ZAP_RUNNING = {"", "RUNNING", "NOT_STARTED", "PENDING", "IN_PROGRESS", "IN PROGRESS"}
+
+_BURP_STATE_MAP = {
+    "succeeded": "completed",
+    "success": "completed",
+    "completed": "completed",
+    "finished": "completed",
+    "failed": "failed",
+    "failure": "failed",
+    "error": "failed",
+    "paused": "paused",
+    "stopped": "stopped",
+    "cancelled": "cancelled",
+    "canceled": "cancelled",
+    "aborted": "cancelled",
+}
+_BURP_RUNNING = {"", "queued", "running", "crawling", "auditing", "pending", "in_progress"}
+
 
 def _get_scanner_config(scanner_type: str) -> dict:
     """Get connection settings for a scanner type."""
@@ -205,6 +244,25 @@ class ZAPClient:
         data = self._get("/JSON/ascan/view/status/", {"scanId": scan_id})
         return int(data.get("status", "0"))
 
+    def spider_scan_state(self, scan_id: str) -> str:
+        """Spider state such as RUNNING, FINISHED, PAUSED, or STOPPED."""
+        return self._record_state("/JSON/spider/view/scans/", scan_id)
+
+    def active_scan_state(self, scan_id: str) -> str:
+        """Active-scan state such as RUNNING, FINISHED, PAUSED, or STOPPED."""
+        return self._record_state("/JSON/ascan/view/scans/", scan_id)
+
+    def _record_state(self, path: str, scan_id: str) -> str:
+        try:
+            data = self._get(path)
+        except Exception:
+            logger.debug("Could not read scanner state from %s", path, exc_info=True)
+            return ""
+        for scan in data.get("scans") or []:
+            if str(scan.get("id")) == str(scan_id):
+                return str(scan.get("state") or "")
+        return ""
+
     def new_context(self, name: str) -> str:
         """Create a new context. Returns context ID."""
         data = self._get("/JSON/context/action/newContext/",
@@ -334,6 +392,115 @@ def scope_sync(project_id: int, scanner_type: str = None, db_path=None) -> dict:
     return result
 
 
+def _terminal_from_zap(progress: int, state: str) -> tuple[str | None, str]:
+    """Return (terminal status, detail) or (None, '') while the scan is still running."""
+    if progress >= 100:
+        return "completed", ""
+    key = (state or "").strip().upper()
+    if key in _ZAP_RUNNING:
+        return None, ""
+    mapped = _ZAP_STATE_MAP.get(key)
+    if mapped:
+        return mapped, ""
+    # Unrecognized and not running: stop instead of polling forever.
+    return "failed", f"unrecognized status: {state}"
+
+
+def _terminal_from_burp(raw: str) -> tuple[str | None, str]:
+    """Return (terminal status, detail) or (None, '') while the scan is still running."""
+    key = (raw or "").strip().lower()
+    if key in _BURP_RUNNING:
+        return None, ""
+    mapped = _BURP_STATE_MAP.get(key)
+    if mapped:
+        return mapped, ""
+    return "failed", f"unrecognized status: {raw}"
+
+
+def _poll_until(read_outcome, timeout: int, poll_interval: int) -> tuple[str, str]:
+    """
+    Poll ``read_outcome() -> (terminal|None, detail)`` until a terminal state or timeout.
+
+    ``timeout`` is seconds. Zero means give up after the first non-terminal read.
+    """
+    deadline = time.monotonic() + max(0, timeout)
+    while True:
+        terminal, detail = read_outcome()
+        if terminal:
+            return terminal, detail
+        if time.monotonic() >= deadline:
+            return "timed_out", detail or "timed out"
+        time.sleep(max(0, poll_interval))
+
+
+def _start_scan_run(scanner: str, kind: str, project_id: int, target_id: int,
+                    external_id: str, db_path=None) -> int | None:
+    """Insert a scan_runs row. Returns None if the insert fails (scan still proceeds)."""
+    try:
+        with get_connection(db_path) as conn:
+            cursor = conn.execute(
+                """INSERT INTO scan_runs
+                   (scanner, kind, project_id, target_id, external_id, status)
+                   VALUES (?, ?, ?, ?, ?, 'running')""",
+                (scanner, kind, project_id, target_id, external_id or None),
+            )
+            return cursor.lastrowid
+    except Exception as e:
+        logger.warning("Could not record scan run: %s", e)
+        return None
+
+
+def _finish_scan_run(run_id: int | None, status: str, findings_count: int = 0,
+                     detail: str = "", db_path=None):
+    """Move a scan run to a terminal status. Never leaves it ``running``."""
+    if not run_id:
+        return
+    if status not in _TERMINAL_SCAN_STATUSES:
+        status = "failed"
+    try:
+        with get_connection(db_path) as conn:
+            conn.execute(
+                """UPDATE scan_runs
+                   SET status = ?, findings_count = ?, detail = ?,
+                       finished_at = datetime('now')
+                   WHERE id = ?""",
+                (status, findings_count, detail or None, run_id),
+            )
+    except Exception as e:
+        logger.warning("Could not finalize scan run #%s: %s", run_id, e)
+
+
+def get_scan_run(run_id: int, db_path=None) -> dict | None:
+    """Get a persisted scanner run."""
+    with get_connection(db_path) as conn:
+        row = conn.execute("SELECT * FROM scan_runs WHERE id = ?", (run_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_scan_runs(project_id: int = None, target_id: int = None,
+                   limit: int = 20, db_path=None) -> list[dict]:
+    """List persisted scanner runs, newest first."""
+    with get_connection(db_path) as conn:
+        query = "SELECT * FROM scan_runs WHERE 1=1"
+        params: list = []
+        if project_id is not None:
+            query += " AND project_id = ?"
+            params.append(project_id)
+        if target_id is not None:
+            query += " AND target_id = ?"
+            params.append(target_id)
+        query += " ORDER BY started_at DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _alert_key(alert: dict) -> tuple:
+    """Stable identity for a ZAP alert, shared by import and the monitor."""
+    name = alert.get("name", alert.get("alert", ""))
+    return (name, alert.get("url", ""), alert.get("param", ""))
+
+
 def _scope_pattern_to_regex(pattern: str, pattern_type: str) -> str:
     """Convert a BBRadar scope pattern to a regex suitable for ZAP context."""
     import re
@@ -357,13 +524,18 @@ def _scope_pattern_to_regex(pattern: str, pattern_type: str) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 def spider(target_id: int, scanner_type: str = None,
-           poll_interval: int = 5, db_path=None) -> dict:
+           poll_interval: int = 5, timeout: int = DEFAULT_SPIDER_TIMEOUT,
+           db_path=None) -> dict:
     """
     Spider a target using the connected scanner.
-    Returns {scanner, target, urls_found, recon_added}.
+    Returns {scanner, target, status, urls_found, recon_added, run_id}.
+
+    Polling stops on a terminal scanner state or when ``timeout`` seconds elapse.
+    The scan_runs row is always finalized.
     """
     from .targets import get_target
     from .recon import bulk_add_recon
+    from .projects import require_active_project
 
     scanner_type = scanner_type or detect_scanner()
     if not scanner_type:
@@ -372,44 +544,67 @@ def spider(target_id: int, scanner_type: str = None,
     target = get_target(target_id, db_path)
     if not target:
         raise ValueError(f"Target #{target_id} not found")
+    require_active_project(target["project_id"], db_path, action="Spidering a target")
 
     target_url = _target_to_url(target["value"])
     result = {"scanner": scanner_type, "target": target["value"],
-              "urls_found": 0, "recon_added": 0}
+              "status": "running", "urls_found": 0, "recon_added": 0,
+              "run_id": None, "detail": ""}
 
-    if scanner_type == "zap":
-        zap = ZAPClient()
-        scan_id = zap.spider_scan(target_url)
-
-        # Poll until complete
-        while True:
-            progress = zap.spider_status(scan_id)
-            print(f"\r  Spider progress: {progress}%", end="", flush=True,
-                  file=sys.stderr)
-            if progress >= 100:
-                break
-            time.sleep(poll_interval)
-        print(file=sys.stderr)
-
-        # Import discovered URLs as recon data
-        urls = zap.urls()
-        target_host = urlparse(target_url).hostname or target["value"]
-        relevant = [u for u in urls if target_host in u]
-        result["urls_found"] = len(relevant)
-
-        if relevant:
-            added = bulk_add_recon(target_id, "url", relevant,
-                                   source_tool="zap-spider", db_path=db_path)
-            result["recon_added"] = added
-
-    elif scanner_type == "burp":
+    if scanner_type == "burp":
         raise RuntimeError(
             "Burp Suite REST API does not support standalone spidering. "
             "Use 'bb scanner scan' which includes crawling."
         )
+    if scanner_type != "zap":
+        raise ValueError(f"Unknown scanner type: {scanner_type}")
+
+    zap = ZAPClient()
+    scan_id = zap.spider_scan(target_url)
+    run_id = _start_scan_run(
+        "zap", "spider", target["project_id"], target_id, scan_id, db_path,
+    )
+    result["run_id"] = run_id
+    final_status = "failed"
+    detail = ""
+    try:
+        def _read():
+            progress = zap.spider_status(scan_id)
+            print(f"\r  Spider progress: {progress}%", end="", flush=True,
+                  file=sys.stderr)
+            state = "" if progress >= 100 else zap.spider_scan_state(scan_id)
+            terminal, why = _terminal_from_zap(progress, state)
+            if terminal is None:
+                why = f"progress {progress}%"
+            return terminal, why
+
+        final_status, detail = _poll_until(_read, timeout, poll_interval)
+        print(file=sys.stderr)
+        result["status"] = final_status
+        result["detail"] = detail
+        if final_status == "completed":
+            urls = zap.urls()
+            target_host = urlparse(target_url).hostname or target["value"]
+            relevant = [u for u in urls if target_host in u]
+            result["urls_found"] = len(relevant)
+            if relevant:
+                added = bulk_add_recon(target_id, "url", relevant,
+                                       source_tool="zap-spider", db_path=db_path)
+                result["recon_added"] = added
+    except KeyboardInterrupt:
+        final_status = "cancelled"
+        result["status"] = "cancelled"
+        raise
+    except Exception:
+        final_status = "failed"
+        result["status"] = "failed"
+        raise
+    finally:
+        _finish_scan_run(run_id, final_status, result["urls_found"], detail, db_path)
 
     log_action("spider", "scanner", target_id,
-               {"scanner": scanner_type, "urls_found": result["urls_found"]}, db_path)
+               {"scanner": scanner_type, "status": result["status"],
+                "urls_found": result["urls_found"]}, db_path)
     return result
 
 
@@ -419,14 +614,17 @@ def spider(target_id: int, scanner_type: str = None,
 
 def scan(target_id: int, project_id: int, scanner_type: str = None,
          auto_import: bool = True, poll_interval: int = 10,
-         db_path=None) -> dict:
+         timeout: int = DEFAULT_SCAN_TIMEOUT, db_path=None) -> dict:
     """
     Launch an active scan against a target using the connected scanner.
-    Polls for completion and optionally auto-imports findings.
+    Polls until a terminal state or ``timeout`` seconds, then optionally
+    imports findings from a completed or failed scan.
 
-    Returns {scanner, target, status, findings_count, imported_ids}.
+    Returns {scanner, target, status, findings_count, imported_ids, run_id, detail}.
+    A stopped, paused, or timed-out scan is not reported as completed.
     """
     from .targets import get_target
+    from .projects import require_active_project
 
     scanner_type = scanner_type or detect_scanner()
     if not scanner_type:
@@ -435,56 +633,90 @@ def scan(target_id: int, project_id: int, scanner_type: str = None,
     target = get_target(target_id, db_path)
     if not target:
         raise ValueError(f"Target #{target_id} not found")
+    require_active_project(project_id, db_path, action="Running a scan")
 
     target_url = _target_to_url(target["value"])
     result = {"scanner": scanner_type, "target": target["value"],
-              "status": "completed", "findings_count": 0, "imported_ids": []}
+              "status": "running", "findings_count": 0, "imported_ids": [],
+              "run_id": None, "detail": ""}
 
     if scanner_type == "zap":
+        client_kind = "zap"
         zap = ZAPClient()
-        scan_id = zap.active_scan(target_url)
+        external_id = zap.active_scan(target_url)
 
-        while True:
-            progress = zap.active_scan_status(scan_id)
+        def _read():
+            progress = zap.active_scan_status(external_id)
             print(f"\r  Active scan progress: {progress}%", end="",
                   flush=True, file=sys.stderr)
-            if progress >= 100:
-                break
-            time.sleep(poll_interval)
-        print(file=sys.stderr)
+            state = "" if progress >= 100 else zap.active_scan_state(external_id)
+            terminal, why = _terminal_from_zap(progress, state)
+            if terminal is None:
+                why = f"progress {progress}%"
+            return terminal, why
 
-        # Import findings
-        alerts = zap.alerts(base_url=target_url)
-        result["findings_count"] = len(alerts)
-
-        if auto_import and alerts:
-            ids = _import_zap_alerts(alerts, project_id, target_id, db_path)
-            result["imported_ids"] = ids
+        def _collect():
+            alerts = zap.alerts(base_url=target_url)
+            result["findings_count"] = len(alerts)
+            if auto_import and alerts:
+                ids = _import_zap_alerts(alerts, project_id, target_id, db_path)
+                result["imported_ids"] = ids
 
     elif scanner_type == "burp":
+        client_kind = "burp"
         burp = BurpClient()
-        task_id = burp.scan([target_url])
+        external_id = burp.scan([target_url])
 
-        while True:
-            status = burp.scan_status(task_id)
-            scan_state = status.get("scan_status", "unknown")
-            print(f"\r  Burp scan status: {scan_state}", end="",
+        def _read():
+            status = burp.scan_status(external_id)
+            raw = status.get("scan_status", "")
+            print(f"\r  Burp scan status: {raw or 'unknown'}", end="",
                   flush=True, file=sys.stderr)
-            if scan_state in ("succeeded", "failed"):
-                break
-            time.sleep(poll_interval)
+            terminal, why = _terminal_from_burp(raw)
+            if terminal is None:
+                why = f"last status: {raw or 'unknown'}"
+            return terminal, why
+
+        def _collect():
+            issues = burp.scan_issues(external_id)
+            result["findings_count"] = len(issues)
+            if auto_import and issues:
+                ids = _import_burp_issues(issues, project_id, target_id, db_path)
+                result["imported_ids"] = ids
+
+    else:
+        raise ValueError(f"Unknown scanner type: {scanner_type}")
+
+    run_id = _start_scan_run(
+        client_kind, "active", project_id, target_id, external_id, db_path,
+    )
+    result["run_id"] = run_id
+    final_status = "failed"
+    detail = ""
+    try:
+        final_status, detail = _poll_until(_read, timeout, poll_interval)
         print(file=sys.stderr)
-
-        result["status"] = scan_state
-        issues = burp.scan_issues(task_id)
-        result["findings_count"] = len(issues)
-
-        if auto_import and issues:
-            ids = _import_burp_issues(issues, project_id, target_id, db_path)
-            result["imported_ids"] = ids
+        result["status"] = final_status
+        result["detail"] = detail
+        # Partial runs (paused, stopped, timed out, cancelled) are not imported.
+        if final_status in ("completed", "failed"):
+            _collect()
+    except KeyboardInterrupt:
+        final_status = "cancelled"
+        result["status"] = "cancelled"
+        raise
+    except Exception:
+        final_status = "failed"
+        result["status"] = "failed"
+        raise
+    finally:
+        _finish_scan_run(
+            run_id, final_status, result["findings_count"], detail, db_path,
+        )
 
     log_action("scan", "scanner", target_id,
-               {"scanner": scanner_type, "findings": result["findings_count"]}, db_path)
+               {"scanner": scanner_type, "status": result["status"],
+                "findings": result["findings_count"]}, db_path)
     return result
 
 
@@ -601,8 +833,13 @@ def _classify_burp_issue(name: str) -> str:
 
 
 def _import_zap_alerts(alerts: list[dict], project_id: int,
-                       target_id: int = None, db_path=None) -> list[int]:
-    """Convert ZAP alerts to vulns, dedup, and create. Returns created vuln IDs."""
+                       target_id: int = None, db_path=None,
+                       _failed: list | None = None) -> list[int]:
+    """Convert ZAP alerts to vulns, dedup, and create. Returns created vuln IDs.
+
+    Alert identities that failed to import are appended to ``_failed`` so the
+    monitor can retry them instead of treating them as seen.
+    """
     from .vulns import create_vuln, list_vulns, VALID_VULN_TYPES
 
     existing = list_vulns(project_id=project_id, limit=10000, db_path=db_path)
@@ -664,6 +901,8 @@ def _import_zap_alerts(alerts: list[dict], project_id: int,
             created.append(vid)
         except Exception as e:
             logger.warning("Failed to create vuln from ZAP alert '%s': %s", name, e)
+            if _failed is not None:
+                _failed.append(_alert_key(alert))
 
     return created
 
@@ -770,25 +1009,36 @@ def monitor(project_id: int, scanner_type: str = None,
         try:
             zap = ZAPClient()
             alerts = zap.alerts()
-            new_alerts = []
-
-            for a in alerts:
-                key = (a.get("name", ""), a.get("url", ""), a.get("param", ""))
-                if key not in seen_alerts:
-                    seen_alerts.add(key)
-                    new_alerts.append(a)
-
-            if new_alerts:
-                ids = _import_zap_alerts(new_alerts, project_id,
-                                         target_id, db_path)
-                stats["total_imported"] += len(ids)
-                if ids:
-                    print(f"  [{timestamp_now()}] Imported {len(ids)} new findings",
-                          file=sys.stderr)
-
         except Exception as e:
             stats["errors"] += 1
             logger.warning("Monitor cycle %d error: %s", cycle, e)
+        else:
+            pending = []
+            for alert in alerts:
+                key = _alert_key(alert)
+                if key not in seen_alerts:
+                    pending.append((key, alert))
+
+            if pending:
+                failed: list = []
+                try:
+                    ids = _import_zap_alerts(
+                        [alert for _, alert in pending], project_id,
+                        target_id, db_path, _failed=failed,
+                    )
+                except Exception as e:
+                    # Leave every key unseen so the next cycle retries the batch.
+                    stats["errors"] += 1
+                    logger.warning("Monitor cycle %d import error: %s", cycle, e)
+                else:
+                    failed_set = set(failed)
+                    for key, _alert in pending:
+                        if key not in failed_set:
+                            seen_alerts.add(key)
+                    stats["total_imported"] += len(ids)
+                    if ids:
+                        print(f"  [{timestamp_now()}] Imported {len(ids)} new findings",
+                              file=sys.stderr)
 
         if max_cycles and cycle >= max_cycles:
             break

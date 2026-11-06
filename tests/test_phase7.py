@@ -171,6 +171,34 @@ class TestMergeVulns:
         pid, db = project
         assert not merge_vulns(9999, 9998, db)
 
+    def test_merge_rejects_self(self, project):
+        pid, db = project
+        vid = create_vuln(pid, "Solo", db_path=db)
+        with pytest.raises(ValueError, match="itself"):
+            merge_vulns(vid, vid, db)
+        assert get_vuln(vid, db)["status"] == "new"
+
+    def test_merge_follows_status_transitions(self, project):
+        """resolved → duplicate is forbidden, and the target is left untouched."""
+        from bbradar.core.audit import get_audit_log
+        pid, db = project
+        source = create_vuln(pid, "Source", severity="high", description="src", db_path=db)
+        target = create_vuln(pid, "Target", severity="low", description="tgt", db_path=db)
+        update_vuln(source, status="reported", db_path=db)
+        update_vuln(source, status="resolved", db_path=db)
+        with pytest.raises(ValueError, match="Cannot transition"):
+            merge_vulns(source, target, db)
+        assert get_vuln(source, db)["status"] == "resolved"
+        assert get_vuln(target, db)["description"] == "tgt"
+        assert get_vuln(target, db)["severity"] == "low"
+
+        # A legal merge records the duplicate transition in the audit log.
+        fresh = create_vuln(pid, "Fresh", db_path=db)
+        assert merge_vulns(fresh, target, db)
+        assert get_vuln(fresh, db)["status"] == "duplicate"
+        actions = [e["action"] for e in get_audit_log(entity_type="vuln", entity_id=fresh, db_path=db)]
+        assert "updated" in actions
+
 
 # ══════════════════════════════════════════════════════════════
 # Audit Log Management

@@ -390,6 +390,27 @@ def _send_desktop(title: str, body: str) -> bool:
 # High-level notification functions
 # ═══════════════════════════════════════════════════════════════════
 
+def delivery_succeeded(notif_result: dict | None, channel: str = "scope") -> bool:
+    """True when a notification was delivered, or no channel was configured.
+
+    A configured Discord or desktop channel that fails does not count: the
+    caller should retry instead of marking the change as seen. If at least
+    one configured channel succeeds, the change was delivered.
+    """
+    status = get_status()
+    discord_key = "discord" if channel in ("", "default") else f"discord_{channel}"
+    discord_on = bool(status.get(discord_key, {}).get("configured"))
+    desktop_on = bool(status.get("desktop", {}).get("enabled"))
+    if not discord_on and not desktop_on:
+        return True
+    notif_result = notif_result or {}
+    if discord_on and notif_result.get("discord"):
+        return True
+    if desktop_on and notif_result.get("desktop"):
+        return True
+    return False
+
+
 def notify_scope_changes(results: list[dict], db_path=None) -> dict:
     """
     Send notifications for scope change results.

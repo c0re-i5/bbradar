@@ -29,6 +29,17 @@ from .targets import get_target
 
 WORKFLOW_DIR = Path(__file__).parent.parent / "workflows"
 
+# running is the only non-terminal status. A run inserted as running is always
+# moved to one of the others, including when a step raises or the user hits Ctrl+C.
+WORKFLOW_RUN_STATUSES = (
+    "running",
+    "completed",
+    "completed_with_errors",
+    "failed",
+    "cancelled",
+)
+_TERMINAL_WORKFLOW_STATUSES = set(WORKFLOW_RUN_STATUSES) - {"running"}
+
 
 def list_workflows() -> list[dict]:
     """List available workflow definitions."""
@@ -121,14 +132,23 @@ def _execute_step(step: dict, target_value: str, target_id: int,
         return _execute_scanner_step(step, target_value, target_id,
                                       dry_run, db_path)
 
-    step_name = step.get("name", "unnamed")
     command_template = step.get("command", "")
     data_type = step.get("data_type", "other")
     source_tool = step.get("tool", "")
     timeout = step.get("timeout", 300)
     parser = step.get("parser", "lines")
+    required = step.get("required", False)
 
-    cmd_parts = shlex.split(command_template)
+    try:
+        cmd_parts = shlex.split(command_template)
+    except ValueError as e:
+        return {
+            "ok": False,
+            "lines": [f"  FAILED: invalid command template: {e}"],
+            "ingested": 0,
+            "required": required,
+        }
+
     cmd_args = [
         part.replace("{{target}}", target_value)
             .replace("{{domain}}", target_value)
@@ -142,41 +162,53 @@ def _execute_step(step: dict, target_value: str, target_id: int,
         return {"ok": True, "lines": lines, "ingested": 0, "skipped": True}
 
     lines.append("  Running...")
-    start = time.time()
-    rc, stdout, stderr = run_tool(cmd_args, timeout=timeout)
-    elapsed = time.time() - start
-    lines.append(f"  Completed in {elapsed:.1f}s (exit code: {rc})")
+    try:
+        start = time.time()
+        rc, stdout, stderr = run_tool(cmd_args, timeout=timeout)
+        elapsed = time.time() - start
+        lines.append(f"  Completed in {elapsed:.1f}s (exit code: {rc})")
+    except KeyboardInterrupt:
+        raise
+    except Exception as e:
+        lines.append(f"  FAILED: {e}")
+        return {"ok": False, "lines": lines, "ingested": 0, "required": required}
 
-    if rc != 0 and not stdout.strip():
-        lines.append(f"  FAILED: {stderr[:200]}")
-        return {"ok": False, "lines": lines, "ingested": 0, "required": step.get("required", False)}
-
-    # Parse output
-    if parser == "lines":
-        values = [l.strip() for l in stdout.splitlines() if l.strip()]
-    elif parser == "json":
-        try:
-            parsed_data = json.loads(stdout)
-            if isinstance(parsed_data, list):
-                values = [str(v) for v in parsed_data]
-            elif isinstance(parsed_data, dict):
-                values = [json.dumps(parsed_data)]
-            else:
-                values = [str(parsed_data)]
-        except json.JSONDecodeError:
+    # Keep partial stdout even when the tool exits non-zero. The step is
+    # still a failure — a non-zero exit is not success just because it printed.
+    try:
+        if parser == "json":
+            try:
+                parsed_data = json.loads(stdout)
+                if isinstance(parsed_data, list):
+                    values = [str(v) for v in parsed_data]
+                elif isinstance(parsed_data, dict):
+                    values = [json.dumps(parsed_data)]
+                else:
+                    values = [str(parsed_data)]
+            except json.JSONDecodeError:
+                values = [l.strip() for l in stdout.splitlines() if l.strip()]
+        else:
             values = [l.strip() for l in stdout.splitlines() if l.strip()]
-    else:
-        values = [l.strip() for l in stdout.splitlines() if l.strip()]
 
-    ingested = 0
-    if values:
-        ingested = bulk_add_recon(target_id, data_type, values,
-                                  source_tool=source_tool, db_path=db_path)
-        lines.append(f"  Ingested {ingested} {data_type} entries")
+        ingested = 0
+        if values:
+            ingested = bulk_add_recon(target_id, data_type, values,
+                                      source_tool=source_tool, db_path=db_path)
+            lines.append(f"  Ingested {ingested} {data_type} entries")
 
-    if step.get("save_raw", False):
-        add_recon(target_id, "other", f"raw_{source_tool}_{target_value}",
-                  source_tool=source_tool, raw_output=stdout, db_path=db_path)
+        if step.get("save_raw", False):
+            add_recon(target_id, "other", f"raw_{source_tool}_{target_value}",
+                      source_tool=source_tool, raw_output=stdout, db_path=db_path)
+    except KeyboardInterrupt:
+        raise
+    except Exception as e:
+        lines.append(f"  FAILED: could not ingest output: {e}")
+        return {"ok": False, "lines": lines, "ingested": 0, "required": required}
+
+    if rc != 0:
+        detail = (stderr or "").strip()[:200]
+        lines.append(f"  FAILED: exit code {rc}" + (f": {detail}" if detail else ""))
+        return {"ok": False, "lines": lines, "ingested": ingested, "required": required}
 
     return {"ok": True, "lines": lines, "ingested": ingested}
 
@@ -205,6 +237,10 @@ def _execute_scanner_step(step: dict, target_value: str, target_id: int,
                 db_path=db_path,
             )
             lines.append(f"  URLs found: {result['urls_found']}, Recon added: {result['recon_added']}")
+            if result.get("status") not in (None, "completed"):
+                lines.append(f"  Scanner status: {result['status']}")
+                return {"ok": False, "lines": lines, "ingested": result["recon_added"],
+                        "required": step.get("required", False)}
             return {"ok": True, "lines": lines, "ingested": result["recon_added"]}
 
         elif action in ("scan", "active-scan"):
@@ -221,6 +257,10 @@ def _execute_scanner_step(step: dict, target_value: str, target_id: int,
             )
             imported = len(result.get("imported_ids", []))
             lines.append(f"  Findings: {result['findings_count']}, Imported: {imported}")
+            if result.get("status") not in (None, "completed"):
+                lines.append(f"  Scanner status: {result['status']}")
+                return {"ok": False, "lines": lines, "ingested": imported,
+                        "required": step.get("required", False)}
             return {"ok": True, "lines": lines, "ingested": imported}
 
         elif action == "import":
@@ -247,13 +287,63 @@ def _execute_scanner_step(step: dict, target_value: str, target_id: int,
                 "required": step.get("required", False)}
 
 
+def _finalize_workflow_run(run_id: int, status: str, output_log: str,
+                           results: dict, name: str, target_value: str,
+                           db_path=None) -> str:
+    """Write a terminal status. Never leaves the row at ``running``."""
+    if status not in _TERMINAL_WORKFLOW_STATUSES:
+        status = "failed"
+    try:
+        with get_connection(db_path) as conn:
+            conn.execute(
+                """UPDATE workflow_runs SET status = ?, finished_at = datetime('now'),
+                   output_log = ? WHERE id = ?""",
+                (status, output_log, run_id),
+            )
+    except Exception as e:
+        print(f"  warning: could not finalize workflow run #{run_id}: {e}", file=sys.stderr)
+        return status
+    try:
+        log_action(
+            "ran_workflow", "workflow", run_id,
+            {
+                "name": name,
+                "target": target_value,
+                "status": status,
+                "steps_run": results.get("steps_run", 0),
+                "steps_ok": results.get("steps_ok", 0),
+                "steps_failed": results.get("steps_failed", 0),
+                "steps_skipped": results.get("steps_skipped", 0),
+                "data_ingested": results.get("data_ingested", 0),
+            },
+            db_path,
+        )
+    except Exception:
+        pass
+    return status
+
+
+def _terminal_workflow_status(results: dict, aborted: bool) -> str:
+    """Map step counts to a terminal run status.
+
+    A required-step abort is a hard failure. Optional step failures finish
+    as completed_with_errors so a warning is not collapsed into a failure.
+    """
+    if aborted:
+        return "failed"
+    if results["steps_failed"] == 0:
+        return "completed"
+    return "completed_with_errors"
+
+
 def run_workflow(name: str, target_id: int, project_id: int = None,
                  dry_run: bool = False, db_path=None) -> dict:
     """
     Execute a workflow against a target.
 
     Steps with ``parallel: true`` that are adjacent are executed concurrently.
-    Returns a dict with run status, output log, and counts.
+    The workflow_runs row is always moved off ``running``: completed,
+    completed_with_errors, failed, or cancelled.
     """
     wf = load_workflow(name)
     target = get_target(target_id, db_path)
@@ -274,23 +364,50 @@ def run_workflow(name: str, target_id: int, project_id: int = None,
 
     target_value = target["value"]
     project_id = project_id or target["project_id"]
-
-    run_id = None
     if not dry_run:
-        with get_connection(db_path) as conn:
-            cursor = conn.execute(
-                """INSERT INTO workflow_runs (workflow_name, project_id, target_id, status)
-                   VALUES (?, ?, ?, 'running')""",
-                (name, project_id, target_id),
-            )
-            run_id = cursor.lastrowid
+        from .projects import require_active_project
+        require_active_project(project_id, db_path, action="Running a workflow")
 
-    output_lines = []
-    results = {"steps_run": 0, "steps_ok": 0, "steps_failed": 0, "data_ingested": 0}
+    steps = wf.get("steps", []) or []
+    output_lines: list[str] = []
+    results = {
+        "steps_run": 0,
+        "steps_ok": 0,
+        "steps_failed": 0,
+        "steps_skipped": 0,
+        "data_ingested": 0,
+    }
+    finished: set[int] = set()
+    skipped_noted = False
     abort = False
+    run_id = None
+    final_status = None
+
+    def _note_skipped():
+        nonlocal skipped_noted
+        if skipped_noted:
+            return
+        skipped_noted = True
+        total = len(steps)
+        for i, step in enumerate(steps):
+            if i in finished:
+                continue
+            step_name = step.get("name", f"Step {i + 1}")
+            output_lines.append(f"\n[Step {i + 1}/{total}] {step_name}")
+            output_lines.append("  (skipped)")
+            results["steps_skipped"] += 1
+
+    def _record(idx: int, res: dict) -> bool:
+        finished.add(idx)
+        results["steps_run"] += 1
+        results["data_ingested"] += res.get("ingested") or 0
+        if res.get("ok"):
+            results["steps_ok"] += 1
+            return False
+        results["steps_failed"] += 1
+        return bool(res.get("required"))
 
     # Group adjacent parallel steps into batches
-    steps = wf.get("steps", [])
     batches: list[list[tuple[int, dict]]] = []
     current_batch: list[tuple[int, dict]] = []
     for i, step in enumerate(steps):
@@ -305,70 +422,85 @@ def run_workflow(name: str, target_id: int, project_id: int = None,
         batches.append(current_batch)
 
     total_steps = len(steps)
-    for batch in batches:
-        if abort:
-            break
+    try:
+        if not dry_run:
+            with get_connection(db_path) as conn:
+                cursor = conn.execute(
+                    """INSERT INTO workflow_runs (workflow_name, project_id, target_id, status)
+                       VALUES (?, ?, ?, 'running')""",
+                    (name, project_id, target_id),
+                )
+                run_id = cursor.lastrowid
 
-        if len(batch) == 1:
-            # Sequential execution
-            idx, step = batch[0]
-            step_name = step.get("name", f"Step {idx + 1}")
-            output_lines.append(f"\n[Step {idx + 1}/{total_steps}] {step_name}")
-            res = _execute_step(step, target_value, target_id, dry_run, db_path)
-            output_lines.extend(res["lines"])
-            results["steps_run"] += 1
-            results["data_ingested"] += res["ingested"]
-            if res["ok"]:
-                results["steps_ok"] += 1
-            else:
-                results["steps_failed"] += 1
-                if res.get("required"):
+        for batch in batches:
+            if abort:
+                break
+
+            if len(batch) == 1:
+                idx, step = batch[0]
+                step_name = step.get("name", f"Step {idx + 1}")
+                output_lines.append(f"\n[Step {idx + 1}/{total_steps}] {step_name}")
+                res = _execute_step(step, target_value, target_id, dry_run, db_path)
+                output_lines.extend(res["lines"])
+                if _record(idx, res):
                     output_lines.append("  (required step failed — aborting workflow)")
                     abort = True
-        else:
-            # Parallel execution
-            names = ", ".join(s.get("name", f"Step {i + 1}") for i, s in batch)
-            output_lines.append(f"\n[Parallel] {names}")
-            max_workers = min(len(batch), wf.get("max_parallel", 4))
-            futures = {}
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                for idx, step in batch:
-                    fut = executor.submit(
-                        _execute_step, step, target_value, target_id, dry_run, db_path
-                    )
-                    futures[fut] = (idx, step)
-                for fut in as_completed(futures):
-                    idx, step = futures[fut]
-                    step_name = step.get("name", f"Step {idx + 1}")
-                    output_lines.append(f"\n  [{step_name}]")
-                    res = fut.result()
-                    output_lines.extend(f"  {l}" for l in res["lines"])
-                    results["steps_run"] += 1
-                    results["data_ingested"] += res["ingested"]
-                    if res["ok"]:
-                        results["steps_ok"] += 1
-                    else:
-                        results["steps_failed"] += 1
-                        if res.get("required"):
+            else:
+                names = ", ".join(s.get("name", f"Step {i + 1}") for i, s in batch)
+                output_lines.append(f"\n[Parallel] {names}")
+                max_workers = min(len(batch), wf.get("max_parallel", 4))
+                futures = {}
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    for idx, step in batch:
+                        fut = executor.submit(
+                            _execute_step, step, target_value, target_id, dry_run, db_path
+                        )
+                        futures[fut] = (idx, step)
+                    for fut in as_completed(futures):
+                        idx, step = futures[fut]
+                        step_name = step.get("name", f"Step {idx + 1}")
+                        output_lines.append(f"\n  [{step_name}]")
+                        try:
+                            res = fut.result()
+                        except KeyboardInterrupt:
+                            raise
+                        except Exception as e:
+                            res = {
+                                "ok": False,
+                                "lines": [f"  FAILED: {e}"],
+                                "ingested": 0,
+                                "required": step.get("required", False),
+                            }
+                        output_lines.extend(f"  {l}" for l in res["lines"])
+                        if _record(idx, res):
                             output_lines.append("  (required step failed — aborting after batch)")
                             abort = True
 
-    # Finalize
-    output_log = "\n".join(output_lines)
-
-    if not dry_run and run_id:
-        status = "completed" if results["steps_failed"] == 0 else "failed"
-        with get_connection(db_path) as conn:
-            conn.execute(
-                """UPDATE workflow_runs SET status = ?, finished_at = datetime('now'),
-                   output_log = ? WHERE id = ?""",
-                (status, output_log, run_id),
+        final_status = "dry_run" if dry_run else _terminal_workflow_status(results, abort)
+    except KeyboardInterrupt:
+        final_status = "cancelled"
+        raise
+    except Exception as e:
+        final_status = "failed"
+        output_lines.append(f"\nWorkflow aborted: {e}")
+        raise
+    finally:
+        _note_skipped()
+        if final_status == "cancelled":
+            output_lines.append("\nWorkflow cancelled.")
+        output_log = "\n".join(output_lines)
+        results["output"] = output_log
+        results["run_id"] = run_id
+        if dry_run:
+            results["status"] = "dry_run"
+        elif run_id:
+            status = final_status if final_status in _TERMINAL_WORKFLOW_STATUSES else "failed"
+            results["status"] = _finalize_workflow_run(
+                run_id, status, output_log, results, name, target_value, db_path,
             )
-        log_action("ran_workflow", "workflow", run_id,
-                   {"name": name, "target": target_value, **results}, db_path)
+        else:
+            results["status"] = final_status or "failed"
 
-    results["run_id"] = run_id
-    results["output"] = output_log
     return results
 
 

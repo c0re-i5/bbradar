@@ -140,15 +140,33 @@ def _set_sync_info(source: str, record_count: int, etag: str = None,
     now = datetime.now(timezone.utc).isoformat()
     with get_connection(db_path) as conn:
         conn.execute("""
-            INSERT INTO kb_sync (source, last_sync, etag, last_modified, record_count, file_hash)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO kb_sync (source, last_sync, etag, last_modified, record_count, file_hash,
+                                 last_status, last_error)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)
             ON CONFLICT(source) DO UPDATE SET
                 last_sync = excluded.last_sync,
                 etag = excluded.etag,
                 last_modified = excluded.last_modified,
                 record_count = excluded.record_count,
-                file_hash = excluded.file_hash
+                file_hash = excluded.file_hash,
+                last_error = NULL
         """, (source, now, etag, last_modified, record_count, file_hash))
+
+
+def _record_sync_error(source: str, reason: str, db_path=None):
+    """Remember the last sync failure so `kb status` can show it.
+
+    Does not touch last_sync, so a failed attempt is not treated as a success.
+    """
+    text = (reason or "unknown error")[:500]
+    with get_connection(db_path) as conn:
+        conn.execute("""
+            INSERT INTO kb_sync (source, last_status, last_error)
+            VALUES (?, 'error', ?)
+            ON CONFLICT(source) DO UPDATE SET
+                last_status = 'error',
+                last_error = excluded.last_error
+        """, (source, text))
 
 
 def _should_skip(source: str, force: bool = False, db_path=None) -> bool:
@@ -1351,6 +1369,11 @@ def sync_all(force: bool = False, sources: list[str] | None = None,
             continue
         r = func(force=force, db_path=db_path, callback=callback)
         results.append(r)
+        if r.get("status") == "error":
+            try:
+                _record_sync_error(src, r.get("reason") or "sync failed", db_path)
+            except Exception:
+                pass
 
     return results
 
@@ -1370,6 +1393,8 @@ def get_sync_status(db_path=None) -> list[dict]:
             "last_sync": info["last_sync"] if info else "never",
             "records": info["record_count"] if info else 0,
             "min_sync_hours": meta.get("min_sync_hours", 24),
+            "last_status": info.get("last_status") if info else None,
+            "last_error": info.get("last_error") if info else None,
         })
     return rows
 

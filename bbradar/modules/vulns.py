@@ -54,6 +54,9 @@ def create_vuln(project_id: int, title: str, severity: str = "medium",
     if vuln_type and vuln_type not in VALID_VULN_TYPES:
         raise ValueError(f"Invalid vuln_type '{vuln_type}'. Valid: {VALID_VULN_TYPES}")
 
+    from .projects import require_active_project
+    require_active_project(project_id, db_path, action="Adding findings")
+
     # Validate CVSS vector if provided
     if cvss_vector:
         cvss_error = validate_cvss_vector(cvss_vector)
@@ -300,49 +303,53 @@ def find_duplicates(vuln_id: int, db_path=None) -> list[dict]:
 
 
 def merge_vulns(source_id: int, target_id: int, db_path=None) -> bool:
-    """Merge source vuln into target: combines evidence, notes, and marks source as duplicate."""
+    """Merge source vuln into target: combines evidence, notes, and marks source as duplicate.
+
+    The duplicate status change goes through ``update_vuln`` so it follows
+    STATUS_TRANSITIONS, notifications, and the audit log. Forbidden
+    transitions (for example resolved → duplicate) are rejected before the
+    surviving finding is modified.
+    """
+    if source_id == target_id:
+        raise ValueError(f"Cannot merge finding #{source_id} into itself")
+
+    source = get_vuln(source_id, db_path)
+    target_v = get_vuln(target_id, db_path)
+    if not source or not target_v:
+        return False
+
+    # Gate the status change first. A rejected transition leaves both rows untouched.
+    update_vuln(source_id, status="duplicate", db_path=db_path)
+
+    # Merge evidence lists
+    src_ev = json.loads(source["evidence"]) if source.get("evidence") else []
+    tgt_ev = json.loads(target_v["evidence"]) if target_v.get("evidence") else []
+    merged_ev = list(dict.fromkeys(tgt_ev + src_ev))  # dedup preserving order
+
+    # Merge descriptions
+    merged_desc = target_v.get("description") or ""
+    if source.get("description"):
+        src_desc = source["description"]
+        if src_desc not in merged_desc:
+            merged_desc += f"\n\n--- Merged from vuln #{source_id} ---\n{src_desc}"
+
+    # Use the higher CVSS / more severe rating
+    sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "informational": 4}
+    best_sev = target_v["severity"]
+    if sev_order.get(source["severity"], 4) < sev_order.get(target_v["severity"], 4):
+        best_sev = source["severity"]
+
+    best_cvss = max(
+        source.get("cvss_score") or 0,
+        target_v.get("cvss_score") or 0,
+    ) or None
+
     with get_connection(db_path) as conn:
-        source_row = conn.execute("SELECT * FROM vulns WHERE id = ?", (source_id,)).fetchone()
-        target_row = conn.execute("SELECT * FROM vulns WHERE id = ?", (target_id,)).fetchone()
-        if not source_row or not target_row:
-            return False
-        source = dict(source_row)
-        target_v = dict(target_row)
-
-        # Merge evidence lists
-        src_ev = json.loads(source["evidence"]) if source.get("evidence") else []
-        tgt_ev = json.loads(target_v["evidence"]) if target_v.get("evidence") else []
-        merged_ev = list(dict.fromkeys(tgt_ev + src_ev))  # dedup preserving order
-
-        # Merge descriptions
-        merged_desc = target_v.get("description") or ""
-        if source.get("description"):
-            src_desc = source["description"]
-            if src_desc not in merged_desc:
-                merged_desc += f"\n\n--- Merged from vuln #{source_id} ---\n{src_desc}"
-
-        # Use the higher CVSS / more severe rating
-        sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "informational": 4}
-        best_sev = target_v["severity"]
-        if sev_order.get(source["severity"], 4) < sev_order.get(target_v["severity"], 4):
-            best_sev = source["severity"]
-
-        best_cvss = max(
-            source.get("cvss_score") or 0,
-            target_v.get("cvss_score") or 0,
-        ) or None
-
-        # Update target vuln
         conn.execute(
             """UPDATE vulns SET evidence = ?, description = ?, severity = ?,
                cvss_score = ?, updated_at = ? WHERE id = ?""",
             (json.dumps(merged_ev) if merged_ev else None, merged_desc,
              best_sev, best_cvss, timestamp_now(), target_id),
-        )
-        # Mark source as duplicate
-        conn.execute(
-            "UPDATE vulns SET status = 'duplicate', updated_at = ? WHERE id = ?",
-            (timestamp_now(), source_id),
         )
         # Re-link notes from source to target
         conn.execute(

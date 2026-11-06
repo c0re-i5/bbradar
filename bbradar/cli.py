@@ -60,6 +60,14 @@ from .modules.wizards import wizard_project, wizard_target, wizard_vuln, quick_v
 # Argument Parser
 # ═══════════════════════════════════════════════════════════════════
 
+def _project_status_arg(value: str) -> str:
+    """argparse type: accept any case of the project status set."""
+    try:
+        return projects.normalize_project_status(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bb",
@@ -103,7 +111,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rules", help="Rules of engagement")
 
     p = sp.add_parser("list", help="List projects")
-    p.add_argument("--status", "-s", help="Filter by status")
+    p.add_argument("--status", "-s", type=_project_status_arg,
+                   help="Filter by status (active/paused/completed/archived)")
 
     p = sp.add_parser("show", help="Show project details")
     p.add_argument("id", type=int, help="Project ID")
@@ -113,7 +122,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--name", help="New name")
     p.add_argument("--platform", help="Platform")
     p.add_argument("--url", help="Program URL")
-    p.add_argument("--status", "-s", help="Status (active/paused/completed/archived)")
+    p.add_argument("--status", "-s", type=_project_status_arg,
+                   help="Status (active/paused/completed/archived)")
     p.add_argument("--scope", help="Scope text")
     p.add_argument("--rules", help="Rules text")
 
@@ -874,7 +884,7 @@ def cmd_status(args):
     try:
         from .core.database import get_connection, get_schema_version, MIGRATIONS
         projs = projects.list_projects()
-        active = [p for p in projs if p["status"] == "active"]
+        active = [p for p in projs if projects.project_status_of(p) == "active"]
         all_vulns = vulns.list_vulns(limit=10000)
         vuln_stats = vulns.get_vuln_stats()
         active_pid = get_active_project()
@@ -1416,6 +1426,8 @@ def cmd_kb(args):
                 last = last[:19].replace('T', ' ')
             print(f"  {src:8s}  {count:>6} records  last sync: {last}")
             print(f"           {desc}")
+            if r.get("last_error"):
+                print(f"           last error: {r['last_error']}")
             print(f"           refresh interval: every {r['min_sync_hours']}h\n")
 
     elif args.subcmd == "search":
@@ -2210,9 +2222,11 @@ def cmd_workflow(args):
         )
         print(result["output"])
         print(f"\n═══ Summary ═══")
+        print(f"  Status:        {result.get('status', '')}")
         print(f"  Steps run:     {result['steps_run']}")
         print(f"  Steps OK:      {result['steps_ok']}")
         print(f"  Steps failed:  {result['steps_failed']}")
+        print(f"  Steps skipped: {result.get('steps_skipped', 0)}")
         print(f"  Data ingested: {result['data_ingested']}")
         if result.get("run_id"):
             print(f"  Run ID:        {result['run_id']}")
@@ -2557,6 +2571,22 @@ def cmd_evidence(args):
 # HackerOne Integration
 # ═══════════════════════════════════════════════════════════════════
 
+def _commit_delivered_scope(results, auto_import):
+    """Persist scope diffs after they have been printed or notified."""
+    for r in results:
+        hackerone.commit_program_check(r, auto_import=auto_import)
+        if r.get("auto_imported"):
+            print(
+                f"    ↳ [{r['handle']}] Auto-imported {r['auto_imported']} "
+                f"new targets into project [{r['project_id']}]"
+            )
+        if r.get("marked_out_of_scope"):
+            print(
+                f"    ↳ [{r['handle']}] Marked {r['marked_out_of_scope']} "
+                f"removed target(s) out of scope"
+            )
+
+
 def cmd_h1(args):
     """HackerOne API integration."""
     import getpass
@@ -2742,9 +2772,13 @@ def cmd_h1(args):
             return
 
         if args.handle:
-            results = [hackerone.check_program(args.handle, auto_import=args.auto_import)]
+            results = [hackerone.check_program(
+                args.handle, auto_import=args.auto_import, commit=False,
+            )]
         else:
-            results = hackerone.check_all_watched(auto_import=args.auto_import)
+            results = hackerone.check_all_watched(
+                auto_import=args.auto_import, commit=False,
+            )
 
         if not results:
             print("\n  No programs being watched. Run 'bb h1 watch <handle>' to start.\n")
@@ -2752,6 +2786,9 @@ def cmd_h1(args):
 
         total_changes = 0
         for r in results:
+            if r.get("error"):
+                print(f"\n  [{r['handle']}] {r.get('name') or r['handle']} — ✗ {r['error']}")
+                continue
             status = "🔔 CHANGES" if r['has_changes'] else "✓ no changes"
             print(f"\n  [{r['handle']}] {r['name']} — {status}")
             if r['new']:
@@ -2768,10 +2805,10 @@ def cmd_h1(args):
                 for s in r['changed']:
                     changes = ', '.join(f"{k}: {v['old']}→{v['new']}" for k, v in s['changes'].items())
                     print(f"      {s['asset_identifier']}: {changes}")
-            if r.get('auto_imported'):
-                print(f"    ↳ Auto-imported {r['auto_imported']} new targets into project [{r['project_id']}]")
             total_changes += len(r.get('new', [])) + len(r.get('removed', [])) + len(r.get('changed', []))
 
+        # Stdout is the delivery for an interactive check. Persist only after it.
+        _commit_delivered_scope(results, args.auto_import)
         print(f"\n  Summary: {len(results)} programs checked, {total_changes} total changes.\n")
 
     elif args.subcmd == "notify":
@@ -2906,15 +2943,16 @@ def cmd_h1(args):
     elif args.subcmd == "monitor":
         quiet = args.quiet
 
-        # Check watched programs
-        results = hackerone.check_all_watched(auto_import=args.auto_import)
+        # Check watched programs. Snapshot stays put until delivery succeeds.
+        results = hackerone.check_all_watched(auto_import=args.auto_import, commit=False)
         changed = [r for r in results if r.get('has_changes')]
+        errored = [r for r in results if r.get("error")]
 
         # Check for newly launched programs
         new_progs = hackerone.check_new_programs()
 
         # Print results (unless --quiet and nothing changed)
-        if not quiet or changed or new_progs:
+        if not quiet or changed or new_progs or errored:
             if changed:
                 for r in changed:
                     print(f"  🔔 [{r['handle']}] {r['name']}")
@@ -2929,10 +2967,11 @@ def cmd_h1(args):
                         for s in r['changed']:
                             changes = ', '.join(f"{k}: {v['old']}→{v['new']}" for k, v in s['changes'].items())
                             print(f"    ~ {s['asset_identifier']}: {changes}")
-                    if r.get('auto_imported'):
-                        print(f"    ↳ Auto-imported {r['auto_imported']} targets")
             elif not quiet:
                 print(f"  ✓ {len(results)} programs checked — no scope changes.")
+
+            for r in errored:
+                print(f"  ✗ [{r['handle']}] {r['error']}")
 
             if new_progs:
                 print(f"\n  🆕 {len(new_progs)} new programs:")
@@ -2940,13 +2979,16 @@ def cmd_h1(args):
                     bounty = " 💰" if p.get('offers_bounties') else ""
                     print(f"    {p['handle']}: {p['name'][:40]}{bounty}")
 
-        # Send notifications
+        # Send notifications, then persist only if delivery worked.
         notif_result = notifier.notify_scope_changes(results)
         if new_progs:
             notifier.notify_new_programs(new_progs)
+        if not changed or notifier.delivery_succeeded(notif_result):
+            _commit_delivered_scope(results, args.auto_import)
 
-        # Check for new hacktivity disclosures on watched programs
-        new_disclosures = hackerone.check_new_hacktivity()
+        # Check for new hacktivity disclosures on watched programs.
+        # Cache updates wait until the disclosure is actually delivered.
+        new_disclosures = hackerone.check_new_hacktivity(commit=False)
         if new_disclosures:
             if not quiet:
                 for d in new_disclosures:
@@ -2955,7 +2997,10 @@ def cmd_h1(args):
                         sev = r.get('severity_rating', '-')
                         bounty = f" ${r['total_awarded_amount']}" if r.get('total_awarded_amount') else ""
                         print(f"    {sev:8s} {r['title'][:60]}{bounty}")
-            notifier.notify_new_hacktivity(new_disclosures)
+            hack_notif = notifier.notify_new_hacktivity(new_disclosures)
+            if notifier.delivery_succeeded(hack_notif):
+                for d in new_disclosures:
+                    hackerone.commit_hacktivity(d)
 
         if not quiet:
             sent_to = []
@@ -3384,7 +3429,10 @@ def cmd_scanner(args):
             scanner_type=scanner_type,
             auto_import=auto_import,
         )
-        print(f"\n✓ {result['scanner'].upper()} scan completed — {result['target']}")
+        label = result.get("status") or "completed"
+        print(f"\n{result['scanner'].upper()} scan {label} — {result['target']}")
+        if result.get("detail"):
+            print(f"  Detail: {result['detail']}")
         print(f"  Findings: {result['findings_count']}")
         if result["imported_ids"]:
             print(f"  Imported: {len(result['imported_ids'])} vulns (IDs: {', '.join(str(i) for i in result['imported_ids'][:10])})")
@@ -3393,7 +3441,10 @@ def cmd_scanner(args):
 
     elif subcmd == "spider":
         result = scanner.spider(target_id=args.target_id)
-        print(f"\n✓ Spider completed — {result['target']}")
+        label = result.get("status") or "completed"
+        print(f"\nSpider {label} — {result['target']}")
+        if result.get("detail") and label != "completed":
+            print(f"  Detail: {result['detail']}")
         print(f"  URLs found:  {result['urls_found']}")
         print(f"  Recon added: {result['recon_added']}")
 

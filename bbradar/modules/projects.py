@@ -9,6 +9,55 @@ from ..core.audit import log_action
 from ..core.utils import timestamp_now
 
 
+# Canonical project lifecycle. Comparisons normalize case so a value like
+# "Active" still matches; writes always store the lowercase form.
+VALID_PROJECT_STATUSES = ("active", "paused", "completed", "archived")
+_VALID_PROJECT_STATUS_SET = set(VALID_PROJECT_STATUSES)
+
+
+def normalize_project_status(status: str) -> str:
+    """Return a canonical project status or raise ValueError."""
+    if status is None or not str(status).strip():
+        raise ValueError(
+            "Project status is required. "
+            f"Valid: {', '.join(VALID_PROJECT_STATUSES)}"
+        )
+    normalized = str(status).strip().lower()
+    if normalized not in _VALID_PROJECT_STATUS_SET:
+        raise ValueError(
+            f"Invalid project status '{status}'. "
+            f"Valid: {', '.join(VALID_PROJECT_STATUSES)}"
+        )
+    return normalized
+
+
+def project_status_of(project: dict) -> str:
+    """Normalized status for a project row. Unknown values are returned lowercased."""
+    return (project.get("status") or "").strip().lower()
+
+
+def require_active_project(project_id: int, db_path=None, action: str = "This operation") -> dict:
+    """
+    Raise unless the project exists and is active.
+
+    Paused, completed, and archived projects stay readable, but operations
+    that add new assessment work (findings, targets, scans, workflows) are
+    refused until the project is set back to active.
+    """
+    project = get_project(project_id, db_path=db_path)
+    if not project:
+        raise ValueError(f"Project #{project_id} not found")
+    status = project_status_of(project)
+    if status != "active":
+        shown = status or project.get("status") or "unknown"
+        raise ValueError(
+            f"Project #{project_id} is '{shown}'. "
+            f"{action} is only allowed while the project is active. "
+            f"Resume it with: bb project update {project_id} --status active"
+        )
+    return project
+
+
 def create_project(name: str, platform: str = None, program_url: str = None,
                    scope_raw: str = None, rules: str = None, db_path=None) -> int:
     """Create a new project. Returns the project ID."""
@@ -30,8 +79,10 @@ def list_projects(status: str = None, db_path=None) -> list[dict]:
     """List projects, optionally filtered by status."""
     with get_connection(db_path) as conn:
         if status:
+            status = normalize_project_status(status)
             rows = conn.execute(
-                "SELECT * FROM projects WHERE status = ? ORDER BY updated_at DESC", (status,)
+                "SELECT * FROM projects WHERE lower(trim(status)) = ? ORDER BY updated_at DESC",
+                (status,),
             ).fetchall()
         else:
             rows = conn.execute(
@@ -58,6 +109,8 @@ def update_project(project_id: int, db_path=None, **kwargs) -> bool:
     updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
     if not updates:
         return False
+    if "status" in updates:
+        updates["status"] = normalize_project_status(updates["status"])
     updates["updated_at"] = timestamp_now()
     set_clause = ", ".join(f"{k} = ?" for k in updates)
     values = list(updates.values()) + [project_id]

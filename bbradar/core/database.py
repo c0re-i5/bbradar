@@ -178,7 +178,8 @@ CREATE TABLE IF NOT EXISTS projects (
     h1_handle       TEXT,                              -- HackerOne program handle for watch/sync
     scope_raw       TEXT,                              -- raw scope text from program page
     rules           TEXT,                              -- rules of engagement notes
-    status          TEXT    NOT NULL DEFAULT 'active',  -- active | paused | completed | archived
+    status          TEXT    NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active', 'paused', 'completed', 'archived')),  -- active | paused | completed | archived
     created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
@@ -268,11 +269,31 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     workflow_name   TEXT    NOT NULL,
     project_id      INTEGER REFERENCES projects(id) ON DELETE SET NULL,
     target_id       INTEGER REFERENCES targets(id) ON DELETE SET NULL,
-    status          TEXT    NOT NULL DEFAULT 'running',  -- running | completed | failed | cancelled
+    status          TEXT    NOT NULL DEFAULT 'running'
+                    CHECK (status IN ('running', 'completed', 'completed_with_errors', 'failed', 'cancelled')),
     started_at      TEXT    NOT NULL DEFAULT (datetime('now')),
     finished_at     TEXT,
     output_log      TEXT
 );
+
+-- Live scanner runs (ZAP / Burp). Same idea as workflow_runs: a row is
+-- inserted as running and always finalized to a terminal status.
+CREATE TABLE IF NOT EXISTS scan_runs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    scanner         TEXT    NOT NULL,                   -- zap | burp
+    kind            TEXT    NOT NULL,                   -- spider | active
+    project_id      INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+    target_id       INTEGER REFERENCES targets(id) ON DELETE SET NULL,
+    external_id     TEXT,                               -- scanner scan / task id
+    status          TEXT    NOT NULL DEFAULT 'running'
+                    CHECK (status IN ('running', 'completed', 'failed', 'stopped', 'paused', 'timed_out', 'cancelled')),
+    findings_count  INTEGER NOT NULL DEFAULT 0,
+    detail          TEXT,
+    started_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    finished_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_scan_runs_target ON scan_runs(target_id);
+CREATE INDEX IF NOT EXISTS idx_scan_runs_project ON scan_runs(project_id);
 
 -- Reports generated
 CREATE TABLE IF NOT EXISTS reports (
@@ -356,7 +377,9 @@ CREATE TABLE IF NOT EXISTS kb_sync (
     etag            TEXT,
     last_modified   TEXT,
     record_count    INTEGER,
-    file_hash       TEXT
+    file_hash       TEXT,
+    last_status     TEXT,                               -- updated | unchanged | not_modified | error | skipped
+    last_error      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_kb_cwe_name ON kb_cwe(name);
@@ -449,6 +472,7 @@ CREATE TABLE IF NOT EXISTS h1_watched_programs (
     project_id      INTEGER REFERENCES projects(id) ON DELETE SET NULL,
     last_checked_at TEXT,
     last_changed_at TEXT,
+    hacktivity_seeded INTEGER NOT NULL DEFAULT 0,       -- 1 once a hacktivity baseline is stored
     created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -519,6 +543,41 @@ CREATE TABLE IF NOT EXISTS h1_weakness_cache (
     UNIQUE(handle, weakness_id)
 );
 CREATE INDEX IF NOT EXISTS idx_h1_weakness_handle ON h1_weakness_cache(handle);
+
+-- Reject statuses the application does not know about. Fresh databases also
+-- have CHECK constraints; these triggers cover databases created before the
+-- constraints existed (SQLite cannot add a CHECK with ALTER TABLE).
+CREATE TRIGGER IF NOT EXISTS trg_projects_status_insert
+BEFORE INSERT ON projects
+FOR EACH ROW
+WHEN NEW.status NOT IN ('active', 'paused', 'completed', 'archived')
+BEGIN
+    SELECT RAISE(ABORT, 'invalid project status');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_projects_status_update
+BEFORE UPDATE OF status ON projects
+FOR EACH ROW
+WHEN NEW.status NOT IN ('active', 'paused', 'completed', 'archived')
+BEGIN
+    SELECT RAISE(ABORT, 'invalid project status');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_workflow_runs_status_insert
+BEFORE INSERT ON workflow_runs
+FOR EACH ROW
+WHEN NEW.status NOT IN ('running', 'completed', 'completed_with_errors', 'failed', 'cancelled')
+BEGIN
+    SELECT RAISE(ABORT, 'invalid workflow run status');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_workflow_runs_status_update
+BEFORE UPDATE OF status ON workflow_runs
+FOR EACH ROW
+WHEN NEW.status NOT IN ('running', 'completed', 'completed_with_errors', 'failed', 'cancelled')
+BEGIN
+    SELECT RAISE(ABORT, 'invalid workflow run status');
+END;
 """;
 
 
@@ -680,6 +739,69 @@ MIGRATIONS = [
         ALTER TABLE vulns ADD COLUMN cwe_id TEXT;
         ALTER TABLE vulns ADD COLUMN cve_id TEXT;
         ALTER TABLE vulns ADD COLUMN owasp_category TEXT;
+    """),
+    (8, "Explicit run/project statuses, scan_runs, KB sync errors, hacktivity seed flag", """
+        UPDATE projects
+           SET status = lower(trim(status))
+         WHERE lower(trim(status)) IN ('active', 'paused', 'completed', 'archived')
+           AND status != lower(trim(status));
+
+        CREATE TRIGGER IF NOT EXISTS trg_projects_status_insert
+        BEFORE INSERT ON projects
+        FOR EACH ROW
+        WHEN NEW.status NOT IN ('active', 'paused', 'completed', 'archived')
+        BEGIN
+            SELECT RAISE(ABORT, 'invalid project status');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_projects_status_update
+        BEFORE UPDATE OF status ON projects
+        FOR EACH ROW
+        WHEN NEW.status NOT IN ('active', 'paused', 'completed', 'archived')
+        BEGIN
+            SELECT RAISE(ABORT, 'invalid project status');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_workflow_runs_status_insert
+        BEFORE INSERT ON workflow_runs
+        FOR EACH ROW
+        WHEN NEW.status NOT IN ('running', 'completed', 'completed_with_errors', 'failed', 'cancelled')
+        BEGIN
+            SELECT RAISE(ABORT, 'invalid workflow run status');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_workflow_runs_status_update
+        BEFORE UPDATE OF status ON workflow_runs
+        FOR EACH ROW
+        WHEN NEW.status NOT IN ('running', 'completed', 'completed_with_errors', 'failed', 'cancelled')
+        BEGIN
+            SELECT RAISE(ABORT, 'invalid workflow run status');
+        END;
+
+        ALTER TABLE kb_sync ADD COLUMN last_status TEXT;
+        ALTER TABLE kb_sync ADD COLUMN last_error TEXT;
+
+        ALTER TABLE h1_watched_programs ADD COLUMN hacktivity_seeded INTEGER NOT NULL DEFAULT 0;
+        UPDATE h1_watched_programs
+           SET hacktivity_seeded = 1
+         WHERE handle IN (SELECT DISTINCT handle FROM h1_hacktivity_cache);
+
+        CREATE TABLE IF NOT EXISTS scan_runs (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            scanner         TEXT    NOT NULL,
+            kind            TEXT    NOT NULL,
+            project_id      INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+            target_id       INTEGER REFERENCES targets(id) ON DELETE SET NULL,
+            external_id     TEXT,
+            status          TEXT    NOT NULL DEFAULT 'running'
+                            CHECK (status IN ('running', 'completed', 'failed', 'stopped', 'paused', 'timed_out', 'cancelled')),
+            findings_count  INTEGER NOT NULL DEFAULT 0,
+            detail          TEXT,
+            started_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+            finished_at     TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_scan_runs_target ON scan_runs(target_id);
+        CREATE INDEX IF NOT EXISTS idx_scan_runs_project ON scan_runs(project_id);
     """),
 ]
 
