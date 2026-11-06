@@ -646,6 +646,32 @@ class TestNotifyIngestComplete:
 # Tests: get_status includes new channels
 # ═══════════════════════════════════════════════════════════════════
 
+class TestDeliverySucceeded:
+    def test_unconfigured_counts_as_delivered(self):
+        status = {
+            "discord_scope": {"configured": False},
+            "desktop": {"enabled": False},
+        }
+        with patch("bbradar.modules.notifier.get_status", return_value=status):
+            assert notifier.delivery_succeeded({"discord": False, "desktop": False}) is True
+
+    def test_configured_channel_failure_is_not_delivered(self):
+        status = {
+            "discord_scope": {"configured": True},
+            "desktop": {"enabled": False},
+        }
+        with patch("bbradar.modules.notifier.get_status", return_value=status):
+            assert notifier.delivery_succeeded({"discord": False, "desktop": False}) is False
+
+    def test_one_successful_channel_is_enough(self):
+        status = {
+            "discord_scope": {"configured": True},
+            "desktop": {"enabled": True},
+        }
+        with patch("bbradar.modules.notifier.get_status", return_value=status):
+            assert notifier.delivery_succeeded({"discord": True, "desktop": False}) is True
+
+
 class TestGetStatusNewChannels:
     @patch("bbradar.modules.notifier._get_notify_config", return_value={})
     @patch("bbradar.modules.notifier._get_discord_webhook", return_value=None)

@@ -593,6 +593,26 @@ class TestWatchProgram:
         assert result["scopes_snapshotted"] == 3
         assert len(hackerone.list_watched(db_path=tmp_db)) == 1
 
+    @patch("bbradar.modules.hackerone.get_hacktivity")
+    @patch("bbradar.modules.hackerone._paginate")
+    @patch("bbradar.modules.hackerone._api_request")
+    def test_watch_seeds_hacktivity_baseline(self, mock_api, mock_paginate, mock_hacktivity, tmp_db):
+        """Watching records current disclosures so the first monitor run is quiet."""
+        mock_api.return_value = _mock_program_response()
+        mock_paginate.return_value = _mock_scope_data()
+        mock_hacktivity.return_value = [
+            {"id": "9000", "title": "Old bug", "severity_rating": "low",
+             "cwe": "", "cve_ids": [], "total_awarded_amount": None,
+             "substate": "resolved", "url": "", "reporter_username": "",
+             "disclosed_at": "", "submitted_at": ""},
+        ]
+        hackerone.watch_program("testprog", db_path=tmp_db)
+        cached = hackerone.get_cached_hacktivity("testprog", db_path=tmp_db)
+        assert [r["h1_report_id"] for r in cached] == ["9000"]
+
+        results = hackerone.check_new_hacktivity(db_path=tmp_db)
+        assert results == []
+
 
 class TestUnwatchProgram:
     @patch("bbradar.modules.hackerone._paginate")
@@ -725,6 +745,73 @@ class TestCheckProgram:
         values = {t["value"] for t in tgts}
         assert "new.example.com" in values
 
+    @patch("bbradar.modules.hackerone._paginate")
+    @patch("bbradar.modules.hackerone._api_request")
+    def test_auto_import_marks_removed_scope_out(self, mock_api, mock_paginate, tmp_db):
+        """Removed assets are marked out of scope instead of staying in-scope."""
+        mock_api.return_value = _mock_program_response()
+        mock_paginate.return_value = _mock_scope_data()
+        imp = hackerone.import_program("testprog", db_path=tmp_db)
+        hackerone.watch_program("testprog", db_path=tmp_db)
+
+        shrunk = _mock_program_response()
+        scopes = shrunk["data"]["relationships"]["structured_scopes"]["data"]
+        shrunk["data"]["relationships"]["structured_scopes"]["data"] = scopes[1:]
+        mock_api.return_value = shrunk
+        mock_paginate.return_value = _mock_scope_data(shrunk)
+
+        result = hackerone.check_program("testprog", auto_import=True, db_path=tmp_db)
+        assert result["marked_out_of_scope"] >= 1
+        removed = [s["asset_identifier"] for s in result["removed"]]
+        assert "*.example.com" in removed
+
+        tgts = list_targets(imp["project_id"], db_path=tmp_db)
+        wildcard = next(t for t in tgts if t["value"] == "*.example.com")
+        assert wildcard["in_scope"] == 0
+        rules = list_rules(imp["project_id"], db_path=tmp_db)
+        wildcard_rules = [r for r in rules if r["pattern"] == "*.example.com"]
+        assert wildcard_rules
+        assert all(r["rule_type"] == "exclude" for r in wildcard_rules)
+
+    @patch("bbradar.modules.hackerone._paginate")
+    @patch("bbradar.modules.hackerone._api_request")
+    def test_snapshot_waits_for_commit(self, mock_api, mock_paginate, tmp_db):
+        """commit=False keeps the previous snapshot so the change can be retried."""
+        from bbradar.core.database import get_connection
+        mock_api.return_value = _mock_program_response()
+        mock_paginate.return_value = _mock_scope_data()
+        hackerone.watch_program("testprog", db_path=tmp_db)
+
+        updated = _mock_program_response()
+        updated["data"]["relationships"]["structured_scopes"]["data"].append({
+            "attributes": {
+                "asset_identifier": "staging.example.com",
+                "asset_type": "DOMAIN",
+                "eligible_for_bounty": True,
+                "eligible_for_submission": True,
+                "instruction": "",
+                "max_severity": "high",
+            }
+        })
+        mock_api.return_value = updated
+        mock_paginate.return_value = _mock_scope_data(updated)
+
+        first = hackerone.check_program("testprog", commit=False, db_path=tmp_db)
+        assert len(first["new"]) == 1
+        with get_connection(tmp_db) as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM h1_scope_snapshots WHERE handle = ?",
+                ("testprog",),
+            ).fetchone()["cnt"]
+        assert count == 3
+
+        second = hackerone.check_program("testprog", commit=False, db_path=tmp_db)
+        assert len(second["new"]) == 1
+
+        hackerone.commit_program_check(first, db_path=tmp_db)
+        third = hackerone.check_program("testprog", db_path=tmp_db)
+        assert third["has_changes"] is False
+
 
 class TestCheckAllWatched:
     @patch("bbradar.modules.hackerone._paginate")
@@ -737,6 +824,28 @@ class TestCheckAllWatched:
         results = hackerone.check_all_watched(db_path=tmp_db)
         assert len(results) == 1
         assert results[0]["handle"] == "testprog"
+
+    def test_one_program_error_does_not_abort_the_rest(self, tmp_db):
+        from bbradar.core.database import get_connection
+        with get_connection(tmp_db) as conn:
+            conn.execute(
+                "INSERT INTO h1_watched_programs (handle, name) VALUES (?, ?), (?, ?)",
+                ("bad", "Bad", "good", "Good"),
+            )
+
+        def _program(handle):
+            if handle == "bad":
+                raise ValueError("Resource not found (HTTP 404)")
+            return {"name": "Good", "handle": "good", "scopes": []}
+
+        with patch("bbradar.modules.hackerone.get_program", side_effect=_program):
+            results = hackerone.check_all_watched(db_path=tmp_db)
+
+        by_handle = {r["handle"]: r for r in results}
+        assert set(by_handle) == {"bad", "good"}
+        assert "404" in by_handle["bad"]["error"]
+        assert by_handle["good"]["error"] is None
+        assert by_handle["good"]["has_changes"] is False
 
 
 class TestCheckNewPrograms:
@@ -1148,11 +1257,17 @@ class TestCheckNewHacktivity:
              "disclosed_at": "2025-04-01", "submitted_at": "2025-03-01"},
         ]
 
-        results = hackerone.check_new_hacktivity(db_path=tmp_db)
+        results = hackerone.check_new_hacktivity(db_path=tmp_db, commit=False)
         assert len(results) == 1
         assert results[0]["handle"] == "testprog"
         assert len(results[0]["new_reports"]) == 1
         assert results[0]["new_reports"][0]["id"] == "9001"
+        # Not persisted until the caller delivers the notification.
+        cached_ids = {r["h1_report_id"] for r in hackerone.get_cached_hacktivity("testprog", tmp_db)}
+        assert cached_ids == {"9000"}
+        hackerone.commit_hacktivity(results[0], db_path=tmp_db)
+        cached_ids = {r["h1_report_id"] for r in hackerone.get_cached_hacktivity("testprog", tmp_db)}
+        assert "9001" in cached_ids
 
     @patch("bbradar.modules.hackerone.get_hacktivity")
     def test_no_new_disclosures(self, mock_hacktivity, tmp_db):
@@ -1200,8 +1315,8 @@ class TestCheckNewHacktivity:
         assert results == []
 
     @patch("bbradar.modules.hackerone.get_hacktivity")
-    def test_empty_cache_all_new(self, mock_hacktivity, tmp_db):
-        """With empty cache, all reports are counted as new."""
+    def test_empty_cache_is_baseline_not_a_flood(self, mock_hacktivity, tmp_db):
+        """An unseeded cache is a baseline. Historical disclosures are not new."""
         from bbradar.core.database import get_connection
 
         with get_connection(tmp_db) as conn:
@@ -1210,7 +1325,7 @@ class TestCheckNewHacktivity:
                 ("testprog", "Test Program"),
             )
 
-        mock_hacktivity.return_value = [
+        baseline = [
             {"id": "9000", "title": "Bug A", "severity_rating": "high",
              "cwe": "", "cve_ids": [], "total_awarded_amount": None,
              "substate": "resolved", "url": "", "reporter_username": "",
@@ -1220,7 +1335,19 @@ class TestCheckNewHacktivity:
              "substate": "resolved", "url": "", "reporter_username": "",
              "disclosed_at": "", "submitted_at": ""},
         ]
+        mock_hacktivity.return_value = list(baseline)
 
         results = hackerone.check_new_hacktivity(db_path=tmp_db)
+        assert results == []
+        cached_ids = {r["h1_report_id"] for r in hackerone.get_cached_hacktivity("testprog", tmp_db)}
+        assert cached_ids == {"9000", "9001"}
+
+        mock_hacktivity.return_value = baseline + [
+            {"id": "9002", "title": "Bug C", "severity_rating": "low",
+             "cwe": "", "cve_ids": [], "total_awarded_amount": None,
+             "substate": "resolved", "url": "", "reporter_username": "",
+             "disclosed_at": "", "submitted_at": ""},
+        ]
+        results = hackerone.check_new_hacktivity(db_path=tmp_db)
         assert len(results) == 1
-        assert len(results[0]["new_reports"]) == 2
+        assert [r["id"] for r in results[0]["new_reports"]] == ["9002"]

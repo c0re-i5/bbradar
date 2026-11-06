@@ -533,6 +533,89 @@ class TestSpider:
 # Monitor
 # ══════════════════════════════════════════════════════════════
 
+class TestScanPolling:
+    def test_spider_timeout_is_not_completed(self, target):
+        tid, pid, db = target
+        from bbradar.modules.scanner import spider, get_scan_run
+        with patch("bbradar.modules.scanner.ZAPClient") as cls:
+            zap = cls.return_value
+            zap.spider_scan.return_value = "1"
+            zap.spider_status.return_value = 40
+            zap.spider_scan_state.return_value = "RUNNING"
+            result = spider(tid, scanner_type="zap", timeout=0, poll_interval=30, db_path=db)
+        assert result["status"] == "timed_out"
+        assert result["urls_found"] == 0
+        zap.urls.assert_not_called()
+        run = get_scan_run(result["run_id"], db)
+        assert run["status"] == "timed_out"
+        assert run["finished_at"]
+
+    def test_zap_stopped_scan_is_not_completed(self, target):
+        tid, pid, db = target
+        from bbradar.modules.scanner import scan, get_scan_run
+        with patch("bbradar.modules.scanner.ZAPClient") as cls:
+            zap = cls.return_value
+            zap.active_scan.return_value = "3"
+            zap.active_scan_status.return_value = 15
+            zap.active_scan_state.return_value = "STOPPED"
+            result = scan(tid, pid, scanner_type="zap", timeout=60, poll_interval=30, db_path=db)
+        assert result["status"] == "stopped"
+        zap.alerts.assert_not_called()
+        assert get_scan_run(result["run_id"], db)["status"] == "stopped"
+
+    def test_burp_paused_stops_polling(self, target):
+        tid, pid, db = target
+        from bbradar.modules.scanner import scan
+        with patch("bbradar.modules.scanner.BurpClient") as cls:
+            burp = cls.return_value
+            burp.scan.return_value = "9"
+            burp.scan_status.return_value = {"scan_status": "paused"}
+            result = scan(tid, pid, scanner_type="burp", timeout=60, poll_interval=30, db_path=db)
+        assert result["status"] == "paused"
+        assert burp.scan_status.call_count == 1
+        burp.scan_issues.assert_not_called()
+
+    def test_burp_unknown_status_does_not_loop(self, target):
+        tid, pid, db = target
+        from bbradar.modules.scanner import scan
+        with patch("bbradar.modules.scanner.BurpClient") as cls:
+            burp = cls.return_value
+            burp.scan.return_value = "9"
+            burp.scan_status.return_value = {"scan_status": "mystery"}
+            result = scan(tid, pid, scanner_type="burp", timeout=60, poll_interval=30, db_path=db)
+        assert result["status"] == "failed"
+        assert "mystery" in result["detail"]
+        assert burp.scan_status.call_count == 1
+
+    def test_keyboard_interrupt_cancels_scan_run(self, target):
+        tid, pid, db = target
+        from bbradar.modules.scanner import spider, list_scan_runs
+        with patch("bbradar.modules.scanner.ZAPClient") as cls:
+            zap = cls.return_value
+            zap.spider_scan.return_value = "1"
+            zap.spider_status.side_effect = KeyboardInterrupt
+            with pytest.raises(KeyboardInterrupt):
+                spider(tid, scanner_type="zap", db_path=db)
+        runs = list_scan_runs(target_id=tid, db_path=db)
+        assert runs
+        assert runs[0]["status"] == "cancelled"
+        assert runs[0]["finished_at"]
+
+    def test_completed_spider_is_persisted(self, target, mock_requests):
+        tid, pid, db = target
+        from bbradar.modules.scanner import spider, get_scan_run
+        scan_resp = MagicMock()
+        scan_resp.json.return_value = {"scan": "1"}
+        status_resp = MagicMock()
+        status_resp.json.return_value = {"status": "100"}
+        urls_resp = MagicMock()
+        urls_resp.json.return_value = {"urls": ["https://example.com/"]}
+        mock_requests.get.side_effect = [scan_resp, status_resp, urls_resp]
+        result = spider(tid, scanner_type="zap", db_path=db)
+        assert result["status"] == "completed"
+        assert get_scan_run(result["run_id"], db)["status"] == "completed"
+
+
 class TestMonitor:
     def test_monitor_cycle(self, project, mock_requests):
         pid, db = project
@@ -549,6 +632,20 @@ class TestMonitor:
                         max_cycles=2, db_path=db)
         assert stats["cycles"] == 2
         # First cycle imports 1, second cycle sees same alert (dedup within monitor)
+        assert stats["total_imported"] == 1
+
+    def test_monitor_retries_when_import_fails(self, project, mock_requests):
+        pid, db = project
+        resp = MagicMock()
+        resp.json.return_value = {"alerts": [
+            {"name": "XSS", "risk": "3", "url": "https://example.com/x", "param": "q"},
+        ]}
+        mock_requests.get.return_value = resp
+        from bbradar.modules.scanner import monitor
+        with patch("bbradar.modules.scanner._import_zap_alerts",
+                   side_effect=[RuntimeError("db locked"), [7]]):
+            stats = monitor(pid, scanner_type="zap", interval=0, max_cycles=2, db_path=db)
+        assert stats["errors"] == 1
         assert stats["total_imported"] == 1
 
     def test_monitor_burp_unsupported(self, project, mock_requests):

@@ -46,7 +46,11 @@ H1_ASSET_TYPE_MAP = {
     "API": "api",
 }
 
-# H1 report states → BBRadar vuln statuses
+# Reference map from HackerOne report substates to local finding statuses.
+# Not applied automatically: local findings move only through
+# vulns.STATUS_TRANSITIONS, and several H1 substates (resolved, duplicate,
+# wontfix) are not legal from every local state. Applying this map would be
+# a new sync workflow, not a safe use of the table.
 H1_STATE_MAP = {
     "new": "new",
     "triaged": "confirmed",
@@ -677,7 +681,8 @@ def get_dashboard_data(db_path=None) -> dict:
 
     # Local data
     proj_list = list_projects(db_path=db_path)
-    active = [p for p in proj_list if p["status"] == "active"]
+    from .projects import project_status_of
+    active = [p for p in proj_list if project_status_of(p) == "active"]
 
     total_vulns = 0
     total_bounty = 0
@@ -786,6 +791,10 @@ def watch_program(handle: str, db_path=None) -> dict:
     log_action("watched_program", "hackerone", None,
                {"handle": handle, "scopes": count}, db_path)
 
+    # Baseline hacktivity so the first monitor run does not report the
+    # program's existing disclosures as new. Failure here does not undo the watch.
+    _seed_hacktivity_cache(handle, db_path)
+
     return {
         "handle": handle,
         "name": program["name"],
@@ -818,7 +827,143 @@ def list_watched(db_path=None) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def check_program(handle: str, auto_import: bool = False, db_path=None) -> dict:
+def _touch_program_checked(handle: str, db_path=None):
+    from ..core.database import get_connection
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE h1_watched_programs SET last_checked_at = datetime('now') WHERE handle = ?",
+            (handle,),
+        )
+
+
+def _persist_scope_snapshot(handle: str, scopes: list[dict], has_changes: bool, db_path=None):
+    """Replace the stored scope snapshot. Call only after the diff was delivered."""
+    from ..core.database import get_connection
+    with get_connection(db_path) as conn:
+        conn.execute("DELETE FROM h1_scope_snapshots WHERE handle = ?", (handle,))
+        for scope in scopes:
+            conn.execute(
+                """INSERT INTO h1_scope_snapshots
+                   (handle, asset_identifier, asset_type, eligible_for_bounty,
+                    eligible_for_submission, max_severity, instruction)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (handle, scope["asset_identifier"], scope["asset_type"],
+                 1 if scope.get("eligible_for_bounty") else 0,
+                 1 if scope.get("eligible_for_submission") else 0,
+                 scope.get("max_severity", ""),
+                 scope.get("instruction", "")),
+            )
+        if has_changes:
+            conn.execute(
+                """UPDATE h1_watched_programs
+                   SET last_changed_at = datetime('now')
+                   WHERE handle = ?""",
+                (handle,),
+            )
+
+
+def _apply_scope_delta(project_id: int, new: list[dict], removed: list[dict],
+                       db_path=None) -> dict:
+    """Import new assets and mark removed ones out of scope on the linked project."""
+    from .scope import add_rule, list_rules, update_rule
+    from .targets import add_target, list_targets, update_target
+
+    imported = 0
+    for s in new:
+        asset_type = H1_ASSET_TYPE_MAP.get(s["asset_type"], "other")
+        in_scope = s["eligible_for_submission"]
+        try:
+            add_target(project_id, asset_type, s["asset_identifier"],
+                       in_scope=in_scope, db_path=db_path)
+            imported += 1
+        except Exception:
+            logger.warning(
+                "Could not import %s into project %s",
+                s.get("asset_identifier"), project_id, exc_info=True,
+            )
+        try:
+            add_rule(project_id, s["asset_identifier"],
+                     rule_type="include" if in_scope else "exclude",
+                     source="hackerone", db_path=db_path)
+        except Exception:
+            logger.warning(
+                "Could not add scope rule %s", s.get("asset_identifier"), exc_info=True,
+            )
+
+    marked = 0
+    if removed:
+        removed_keys = {
+            (s.get("asset_identifier") or "").strip().lower() for s in removed
+        }
+        for t in list_targets(project_id, db_path=db_path):
+            if (t.get("value") or "").strip().lower() not in removed_keys:
+                continue
+            if not t.get("in_scope"):
+                continue
+            try:
+                update_target(t["id"], in_scope=False, db_path=db_path)
+                marked += 1
+            except Exception:
+                logger.warning("Could not mark target %s out of scope", t.get("id"), exc_info=True)
+        for rule in list_rules(project_id, db_path=db_path):
+            if (rule.get("pattern") or "").strip().lower() not in removed_keys:
+                continue
+            if rule.get("rule_type") != "include":
+                continue
+            try:
+                update_rule(rule["id"], rule_type="exclude", db_path=db_path)
+            except Exception:
+                logger.warning("Could not flip scope rule %s to exclude", rule.get("id"), exc_info=True)
+
+    return {"imported": imported, "marked_out": marked}
+
+
+def _log_scope_change(result: dict, db_path=None):
+    if not result.get("has_changes"):
+        return
+    log_action(
+        "scope_change_detected", "hackerone", result.get("project_id"),
+        {
+            "handle": result.get("handle"),
+            "new": len(result.get("new") or []),
+            "removed": len(result.get("removed") or []),
+            "changed": len(result.get("changed") or []),
+            "auto_imported": result.get("auto_imported", 0),
+            "marked_out_of_scope": result.get("marked_out_of_scope", 0),
+        },
+        db_path,
+    )
+
+
+def commit_program_check(result: dict, auto_import: bool = False, db_path=None) -> dict:
+    """Persist a scope diff after it has been printed or notified.
+
+    No-op when the check failed or was already committed. Removed assets are
+    marked out of scope (and their include rules flipped to exclude) only
+    when ``auto_import`` is set, matching how new assets are applied.
+    """
+    if result.get("error") or not result.get("_pending_commit"):
+        return result
+    scopes = result.get("_scopes") or []
+    handle = result["handle"]
+    _persist_scope_snapshot(handle, scopes, bool(result.get("has_changes")), db_path)
+    if auto_import and result.get("project_id") and result.get("has_changes"):
+        applied = _apply_scope_delta(
+            result["project_id"],
+            result.get("new") or [],
+            result.get("removed") or [],
+            db_path,
+        )
+        result["auto_imported"] = applied["imported"]
+        result["marked_out_of_scope"] = applied["marked_out"]
+    result.pop("_scopes", None)
+    result.pop("_pending_commit", None)
+    _log_scope_change(result, db_path)
+    return result
+
+
+def check_program(handle: str, auto_import: bool = False, db_path=None,
+                  commit: bool = True) -> dict:
     """
     Check a single watched program for scope changes.
 
@@ -883,82 +1028,71 @@ def check_program(handle: str, auto_import: bool = False, db_path=None) -> dict:
 
     has_changes = bool(new or removed or changed)
 
-    # Update snapshot
     with get_connection(db_path) as conn:
-        conn.execute("DELETE FROM h1_scope_snapshots WHERE handle = ?", (handle,))
-        for key, scope in current_scopes.items():
-            conn.execute(
-                """INSERT INTO h1_scope_snapshots
-                   (handle, asset_identifier, asset_type, eligible_for_bounty,
-                    eligible_for_submission, max_severity, instruction)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (handle, scope["asset_identifier"], scope["asset_type"],
-                 1 if scope["eligible_for_bounty"] else 0,
-                 1 if scope["eligible_for_submission"] else 0,
-                 scope["max_severity"], scope["instruction"]),
-            )
-
-        # Update watch metadata
-        update_fields = "last_checked_at = datetime('now')"
-        if has_changes:
-            update_fields += ", last_changed_at = datetime('now')"
-        conn.execute(
-            f"UPDATE h1_watched_programs SET {update_fields} WHERE handle = ?",
-            (handle,),
-        )
-
-        # Get linked project for auto-import
         row = conn.execute(
             "SELECT project_id FROM h1_watched_programs WHERE handle = ?",
             (handle,),
         ).fetchone()
         project_id = row["project_id"] if row else None
+    # Record that we looked, but do not replace the snapshot until the caller
+    # has delivered the diff (or commit=True, which delivers by returning).
+    _touch_program_checked(handle, db_path)
 
-    # Auto-import new scope into linked project
-    auto_imported = 0
-    if auto_import and project_id and new:
-        from .scope import add_rule
-        from .targets import add_target
-        for s in new:
-            asset_type = H1_ASSET_TYPE_MAP.get(s["asset_type"], "other")
-            in_scope = s["eligible_for_submission"]
-            try:
-                add_target(project_id, asset_type, s["asset_identifier"],
-                           in_scope=in_scope, db_path=db_path)
-                auto_imported += 1
-            except Exception:
-                pass
-            try:
-                add_rule(project_id, s["asset_identifier"],
-                         rule_type="include" if in_scope else "exclude",
-                         source="hackerone", db_path=db_path)
-            except Exception:
-                pass
-
-    if has_changes:
-        log_action("scope_change_detected", "hackerone", project_id,
-                   {"handle": handle, "new": len(new), "removed": len(removed),
-                    "changed": len(changed), "auto_imported": auto_imported},
-                   db_path)
-
-    return {
+    scopes = list(current_scopes.values())
+    result = {
         "handle": handle,
         "name": program["name"],
         "new": new,
         "removed": removed,
         "changed": changed,
         "has_changes": has_changes,
-        "auto_imported": auto_imported,
+        "auto_imported": 0,
+        "marked_out_of_scope": 0,
         "project_id": project_id,
+        "error": None,
     }
+    if commit:
+        _persist_scope_snapshot(handle, scopes, has_changes, db_path)
+        if auto_import and project_id and has_changes:
+            applied = _apply_scope_delta(project_id, new, removed, db_path)
+            result["auto_imported"] = applied["imported"]
+            result["marked_out_of_scope"] = applied["marked_out"]
+        _log_scope_change(result, db_path)
+    else:
+        result["_scopes"] = scopes
+        result["_pending_commit"] = True
+    return result
 
 
-def check_all_watched(auto_import: bool = False, db_path=None) -> list[dict]:
-    """Check all watched programs for scope changes."""
+def check_all_watched(auto_import: bool = False, db_path=None,
+                      commit: bool = True) -> list[dict]:
+    """Check all watched programs for scope changes.
+
+    A failure for one program (404, 429, removed program) is recorded on
+    that result and does not abort the rest. Pass ``commit=False`` when the
+    caller will print or notify before persisting the snapshot.
+    """
     watched = list_watched(db_path)
     results = []
     for w in watched:
-        result = check_program(w["handle"], auto_import=auto_import, db_path=db_path)
+        try:
+            result = check_program(
+                w["handle"], auto_import=auto_import, db_path=db_path, commit=commit,
+            )
+        except Exception as e:
+            logger.warning("Scope check failed for %s: %s", w.get("handle"), e)
+            result = {
+                "handle": w.get("handle"),
+                "name": w.get("name") or w.get("handle"),
+                "new": [],
+                "removed": [],
+                "changed": [],
+                "has_changes": False,
+                "auto_imported": 0,
+                "marked_out_of_scope": 0,
+                "project_id": w.get("project_id"),
+                "error": str(e),
+            }
         results.append(result)
     return results
 
@@ -1218,10 +1352,61 @@ def get_program_intel(handle: str, refresh: bool = False, db_path=None) -> dict:
     }
 
 
-def check_new_hacktivity(db_path=None) -> list[dict]:
+def _set_hacktivity_seeded(handle: str, db_path=None):
+    from ..core.database import get_connection
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE h1_watched_programs SET hacktivity_seeded = 1 WHERE handle = ?",
+            (handle,),
+        )
+
+
+def _hacktivity_is_seeded(handle: str, known_count: int, db_path=None) -> bool:
+    """True once a baseline exists.
+
+    A non-empty cache written before the seed flag existed counts as a baseline.
+    An empty cache does not: that is indistinguishable from "never fetched".
+    """
+    from ..core.database import get_connection
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT hacktivity_seeded FROM h1_watched_programs WHERE handle = ?",
+            (handle,),
+        ).fetchone()
+    if row and row["hacktivity_seeded"]:
+        return True
+    return known_count > 0
+
+
+def _seed_hacktivity_cache(handle: str, db_path=None) -> bool:
+    """Store the current hacktivity page as a baseline. Returns False on API failure."""
+    try:
+        reports = get_hacktivity(handle, max_pages=1)
+    except Exception as e:
+        logger.warning("Could not seed hacktivity cache for %s: %s", handle, e)
+        return False
+    cache_hacktivity(handle, reports or [], db_path)
+    _set_hacktivity_seeded(handle, db_path)
+    return True
+
+
+def commit_hacktivity(entry: dict, db_path=None) -> None:
+    """Persist hacktivity fetched by ``check_new_hacktivity(commit=False)``."""
+    pending = entry.get("_pending_reports")
+    if pending is None:
+        return
+    cache_hacktivity(entry["handle"], pending, db_path)
+    entry.pop("_pending_reports", None)
+
+
+def check_new_hacktivity(db_path=None, commit: bool = True) -> list[dict]:
     """
     Check watched programs for newly disclosed hacktivity items.
     Compares current hacktivity against cached data.
+
+    The first observation of a program is stored as a baseline and is not
+    reported as new. With ``commit=False``, new report IDs are returned but
+    the cache is left unchanged until ``commit_hacktivity``.
 
     Returns list of {handle, name, new_reports: [...]} for programs with new disclosures.
     """
@@ -1245,19 +1430,27 @@ def check_new_hacktivity(db_path=None) -> list[dict]:
         try:
             current = get_hacktivity(handle, max_pages=1)
         except Exception:
+            logger.warning("Hacktivity check failed for %s", handle, exc_info=True)
+            continue
+
+        if not _hacktivity_is_seeded(handle, len(known_ids), db_path):
+            cache_hacktivity(handle, current or [], db_path)
+            _set_hacktivity_seeded(handle, db_path)
             continue
 
         new_reports = [r for r in current if r["id"] not in known_ids]
+        if not new_reports:
+            continue
 
-        if new_reports:
-            results.append({
-                "handle": handle,
-                "name": w.get("name", handle),
-                "new_reports": new_reports,
-            })
-
-        # Update cache with current data
-        if current:
+        entry = {
+            "handle": handle,
+            "name": w.get("name", handle),
+            "new_reports": new_reports,
+        }
+        if commit:
             cache_hacktivity(handle, current, db_path)
+        else:
+            entry["_pending_reports"] = current
+        results.append(entry)
 
     return results

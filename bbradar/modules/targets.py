@@ -31,6 +31,8 @@ def add_target(project_id: int, asset_type: str, value: str,
     if tier and tier not in VALID_TIERS:
         raise ValueError(f"Invalid tier '{tier}'. Must be one of: {VALID_TIERS}")
     value = _normalize_value(value, asset_type)
+    from .projects import require_active_project
+    require_active_project(project_id, db_path, action="Adding targets")
     # Validate target value format
     validation_error = validate_target_value(value, asset_type)
     if validation_error:
@@ -50,6 +52,8 @@ def add_target(project_id: int, asset_type: str, value: str,
 def bulk_add_targets(project_id: int, asset_type: str, values: list[str],
                      in_scope: bool = True, db_path=None) -> int:
     """Add multiple targets at once. Returns count of inserted targets."""
+    from .projects import require_active_project
+    require_active_project(project_id, db_path, action="Adding targets")
     added = 0
     skipped = 0
     errors = []
